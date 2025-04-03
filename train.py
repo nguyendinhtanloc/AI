@@ -87,7 +87,7 @@ class TicTacToe:
                 best_score = score
                 best_move = (i, j)
 
-        return best_move if best_move else self.easy_move()
+        return best_move
 
     def can_block(self, x, y, player):
         """Kiểm tra xem nếu AI (hoặc đối thủ) có thể tạo thành một chuỗi quân đủ dài (2 quân cho 5x5, 3 quân cho 7x7)"""
