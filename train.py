@@ -243,8 +243,40 @@ class TicTacToe:
                     break
             return min_eval, best_move
 
-    def hard_move(self):
+    def hard_move(self, player):
         '''Chế độ khó: Sử dụng alpha-beta hoặc DQN tùy vào kích thước bàn cờ'''
+        opponent = -player
+        best_move = None
+
+        # Kiểm tra xem có thể thắng không
+        for i, j in self.get_available_moves():
+            self.board[i, j] = player
+
+            if self.is_winner(player):
+                self.board[i, j] = 0
+
+                return (i, j)
+            self.board[i, j] = 0
+
+        # Kiểm tra xem đối thủ có thể thắng không, nếu có thì chặn
+        for i, j in self.get_available_moves():
+            self.board[i, j] = opponent
+
+            if self.is_winner(opponent):
+                self.board[i, j] = 0
+
+                return (i, j)
+            self.board[i, j] = 0
+
+        # Kiểm tra những nước đi có thể chặn chuỗi dài của đối thủ (2 hoặc 3 quân liên tiếp)
+        for i, j in self.get_available_moves():
+            block_move = self.can_block(i, j, opponent)
+
+            if block_move:
+                print(f"Blocking move at {block_move} to stop opponent from winning!")
+
+                return block_move
+
         if self.size == 3:
             return self.alpha_beta_move(depth=9, is_maximizing_player=True)[1]
         else:
@@ -369,7 +401,7 @@ class Algorithm:
                 elif mode == "medium":
                     move = game.medium_move(-1)
                 elif mode == "hard":
-                    move = game.hard_move() # Chế độ khó (AI sử dụng DQN)
+                    move = game.hard_move(-1) # Chế độ khó (AI sử dụng DQN)
                 game.make_move(move[0], move[1], -1)  # AI đi nước
                 print(f"AI moves at: {move}")
 
@@ -484,7 +516,7 @@ class Algorithm:
 
 class Main:
     '''Class Main: Lớp chính'''
-    
+
     @staticmethod
     def main():
         # Chọn chế độ chơi hoặc huấn luyện
