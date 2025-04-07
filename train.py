@@ -66,7 +66,7 @@ class TicTacToe:
 
         # Kiểm tra xem có thể thắng không
         for i, j in self.get_available_moves():
-            self.board[i, j] = player
+            self.board[i, j] = player   
 
             if self.is_winner(player):
                 self.board[i, j] = 0
@@ -84,6 +84,11 @@ class TicTacToe:
                 return (i, j)
             self.board[i, j] = 0
 
+        # Ưu tiên tạo chuỗi tấn công
+        for i, j in self.get_available_moves():
+            if self.can_extend_chain(i, j, player):
+                return (i, j)
+
         # Kiểm tra những nước đi có thể chặn chuỗi dài của đối thủ (2 hoặc 3 quân liên tiếp)
         for i, j in self.get_available_moves():
             block_move = self.can_block(i, j, opponent)
@@ -97,6 +102,57 @@ class TicTacToe:
         _, move = self.alpha_beta_move(depth=2, is_maximizing_player=(player == -1))
         
         return move
+
+    def can_extend_chain(self, x, y, player):
+        """Kiểm tra nếu đặt tại (x,y) có giúp nối thành chuỗi liên tiếp (kể cả nối vào giữa)"""
+
+        if self.board[x, y] != 0:
+            return False  # Ô đã bị chiếm
+
+        # Mục tiêu chuỗi theo kích thước bàn cờ
+        if self.size == 5:
+            target_length = 3
+        elif self.size == 7:
+            target_length = 4
+        else:
+            return False
+
+        directions = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (1,1), (-1,1), (1,-1)]
+
+        for dx, dy in directions:
+            # 1. Kiểm tra mở rộng 2 đầu (bình thường)
+            count = 1  # tính luôn (x, y)
+            for dir in [1, -1]:
+                for i in range(1, target_length):
+                    nx = x + dir * i * dx
+                    ny = y + dir * i * dy
+                    if 0 <= nx < self.size and 0 <= ny < self.size and self.board[nx, ny] == player:
+                        count += 1
+                    else:
+                        break
+            if count >= target_length:
+                return True
+
+            # 2. Kiểm tra nối vào giữa: [player - empty(x,y) - player]
+            nx1, ny1 = x - dx, y - dy
+            nx2, ny2 = x + dx, y + dy
+            if all(0 <= nx < self.size and 0 <= ny < self.size for nx, ny in [(nx1, ny1), (nx2, ny2)]):
+                if self.board[nx1, ny1] == player and self.board[nx2, ny2] == player:
+                    # Đã có 2 đầu, thêm ô giữa là nối chuỗi
+                    if target_length <= 3:
+                        return True  # đủ chuỗi
+                    else:
+                        # Cần kiểm tra thêm: có ít nhất một quân nữa cùng hướng?
+                        nx3 = x + 2 * dx
+                        ny3 = y + 2 * dy
+                        if 0 <= nx3 < self.size and 0 <= ny3 < self.size and self.board[nx3, ny3] == player:
+                            return True  # ví dụ chuỗi X . X X
+                        nx3 = x - 2 * dx
+                        ny3 = y - 2 * dy
+                        if 0 <= nx3 < self.size and 0 <= ny3 < self.size and self.board[nx3, ny3] == player:
+                            return True  # ví dụ chuỗi X X . X
+
+        return False
 
     def can_block(self, x, y, player):
         """Kiểm tra xem nếu AI (hoặc đối thủ) có thể tạo thành một chuỗi quân đủ dài (3 quân cho 5x5, 4 quân cho 7x7)"""
@@ -267,6 +323,11 @@ class TicTacToe:
 
                 return (i, j)
             self.board[i, j] = 0
+
+        # Ưu tiên tạo chuỗi tấn công
+        for i, j in self.get_available_moves():
+            if self.can_extend_chain(i, j, player):
+                return (i, j)
 
         # Kiểm tra những nước đi có thể chặn chuỗi dài của đối thủ (2 hoặc 3 quân liên tiếp)
         for i, j in self.get_available_moves():
