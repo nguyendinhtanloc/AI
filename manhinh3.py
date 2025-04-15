@@ -26,43 +26,112 @@ class TicTacToe:
         self.current_player = "X"
         self.board = [["" for _ in range(self.size)] for _ in range(self.size)]
         self.game_over = False
-
-        # Tạo giao diện
+        
+        # Tạo root trước khi dùng
         self.root = tk.Tk()
         self.root.title(f"Tic-Tac-Toe - {self.board_size} | {self.difficulty} | {self.game_mode}")
-        
+        self.root.configure(bg="#ffe6f0")
+
+        self.cell_size = 60
+        self.canvas_size = self.cell_size * self.size
+
+        self.canvas = tk.Canvas(self.root, width=self.canvas_size, height=self.canvas_size,
+                                bg="#fff0f5", highlightthickness=0)
+        self.canvas.pack(pady=10)
+        self.canvas.bind("<Button-1>", self.on_canvas_click)
+
+        self.draw_grid()
+
         # Frame hiển thị thông tin
-        self.info_frame = tk.Frame(self.root)
+        self.info_frame = tk.Frame(self.root, bg="#ffe6f0")
         self.info_frame.pack(pady=5)
-        
-        self.turn_label = tk.Label(self.info_frame, text=f"Lượt: {self.current_player}", 
-                                 font=("Arial", 12, "bold"))
+
+        self.turn_label = tk.Label(
+            self.info_frame,
+            text=f"Lượt: {self.current_player}",
+            font=("Arial", 14, "bold"),
+            fg="#ff4d88",
+            bg="#ffe6f0",
+            highlightbackground="#ffcce0",
+            highlightcolor="#ffcce0"
+        )
         self.turn_label.pack(side=tk.LEFT, padx=10)
 
-        # Tạo bàn cờ
-        self.buttons = [[None for _ in range(self.size)] for _ in range(self.size)]
-        self.create_board()
-        
         # Nút điều khiển
-        self.control_frame = tk.Frame(self.root)
+        self.control_frame = tk.Frame(self.root, bg="#ffe6f0")
         self.control_frame.pack(pady=10)
-        
-        tk.Button(self.control_frame, text="Chơi lại", command=self.reset_game).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.control_frame, text="Thoát", command=self.back_to_menu).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(
+            self.control_frame,
+            text="🔁 Chơi lại",
+            font=("Arial", 12),
+            width=10,
+            bg="#ffb3d9",
+            fg="black",
+            bd=2,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground="#ffcce0",
+            highlightcolor="#ffcce0",
+            activebackground="#ffe6f0",
+            activeforeground="black",
+            command=self.reset_game
+        ).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(
+            self.control_frame,
+            text="⏪ Thoát",
+            font=("Arial", 12),
+            width=10,
+            bg="#ffb3d9",
+            fg="black",
+            bd=2,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground="#ffcce0",
+            highlightcolor="#ffcce0",
+            activebackground="#ffe6f0",
+            activeforeground="black",
+            command=self.back_to_menu
+        ).pack(side=tk.LEFT, padx=10)
 
         self.root.mainloop()
+    
 
-    def create_board(self):
-        """Tạo giao diện bàn cờ"""
-        board_frame = tk.Frame(self.root)
-        board_frame.pack()
-        
-        for i in range(self.size):
-            for j in range(self.size):
-                btn = tk.Button(board_frame, text="", font=("Arial", 24), width=3, height=1,
-                               command=lambda r=i, c=j: self.make_move(r, c))
-                btn.grid(row=i, column=j, padx=2, pady=2)
-                self.buttons[i][j] = btn
+    # Vẽ lưới giống ô vở
+    def draw_grid(self):
+        for i in range(self.size + 1):
+            self.canvas.create_line(0, i * self.cell_size, self.canvas_size, i * self.cell_size,
+                                    fill="#999", width=1)
+            self.canvas.create_line(i * self.cell_size, 0, i * self.cell_size, self.canvas_size,
+                                    fill="#999", width=1)
+
+    def on_canvas_click(self, event):
+        if self.game_over:
+            return
+
+        row = event.y // self.cell_size
+        col = event.x // self.cell_size
+
+        if row < self.size and col < self.size and self.board[row][col] == "":
+            self.board[row][col] = self.current_player
+            self.draw_symbol(row, col, self.current_player)
+
+            # Thêm logic check win nếu cần
+            # if self.check_win(): ...
+
+            self.current_player = "O" if self.current_player == "X" else "X"
+            self.turn_label.config(text=f"Lượt: {self.current_player}")
+
+    def draw_symbol(self, row, col, player):
+        x0 = col * self.cell_size + self.cell_size // 2
+        y0 = row * self.cell_size + self.cell_size // 2
+
+        color = "red" if player == "X" else "purple"
+        symbol = "X" if player == "X" else "♡"
+
+        self.canvas.create_text(x0, y0, text=symbol, font=("Arial", 28, "bold"), fill=color)
+
 
     def make_move(self, row, col):
         """Xử lý nước đi của người chơi"""
@@ -189,9 +258,9 @@ class TicTacToe:
         
         self.turn_label.config(text=f"Lượt: {self.current_player}")
 
-
 def display_board():
     TicTacToe()
+
 
 if __name__ == "__main__":
     display_board()

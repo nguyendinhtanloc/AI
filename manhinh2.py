@@ -96,6 +96,7 @@ def logout():
 root = tk.Tk()
 root.title("Tic-Tac-Toe - Màn hình chính")
 root.geometry("500x400")
+root.configure(bg="#ffc0cb")
 
 # Tạo menu bar
 menubar = tk.Menu(root)
@@ -109,21 +110,44 @@ help_menu.add_command(label="Giới thiệu", command=lambda: messagebox.showinf
 menubar.add_cascade(label="Trợ giúp", menu=help_menu)
 
 # Phần chính
-tk.Label(root, text="Chọn chế độ chơi", font=("Arial", 16, "bold")).pack(pady=20)
+tk.Label(root, text="Chọn chế độ chơi", font=("Arial", 16, "bold"), bg="#ffc0cb", fg="white").pack(pady=20)
 
-button_frame = tk.Frame(root)
+button_frame = tk.Frame(root, bg="#ffc0cb")
 button_frame.pack(pady=10)
 
-tk.Button(button_frame, text="Đấu với máy", font=("Arial", 12), width=20, command=play_with_ai).pack(pady=5)
-tk.Button(button_frame, text="Đấu với bạn", font=("Arial", 12), width=20, command=play_with_friend).pack(pady=5)
-tk.Button(button_frame, text="Đấu hạng", font=("Arial", 12), width=20, command=ranked_match).pack(pady=5)
-tk.Button(button_frame, text="Xếp hạng", font=("Arial", 12), width=20, command=view_leaderboard).pack(pady=5)
-tk.Button(button_frame, text="Lịch sử", font=("Arial", 12), width=20, command=view_history).pack(pady=5)
+tk.Button(button_frame, text="Đấu với máy", font=("Arial", 12), width=20,
+          bg="white", fg="black", bd=2, relief="solid",
+          highlightbackground="#ffc0cb", highlightcolor="#ffc0cb",
+          highlightthickness=2, command=play_with_ai).pack(pady=5)
+
+tk.Button(button_frame, text="Đấu với bạn", font=("Arial", 12), width=20,
+          bg="white", fg="black", bd=2, relief="solid",
+          highlightbackground="#ffc0cb", highlightcolor="#ffc0cb",
+          highlightthickness=2, command=play_with_friend).pack(pady=5)
+
+tk.Button(button_frame, text="Đấu hạng", font=("Arial", 12), width=20,
+          bg="white", fg="black", bd=2, relief="solid",
+          highlightbackground="#ffc0cb", highlightcolor="#ffc0cb",
+          highlightthickness=2, command=ranked_match).pack(pady=5)
+
+tk.Button(button_frame, text="Xếp hạng", font=("Arial", 12), width=20,
+          bg="white", fg="black", bd=2, relief="solid",
+          highlightbackground="#ffc0cb", highlightcolor="#ffc0cb",
+          highlightthickness=2, command=view_leaderboard).pack(pady=5)
+
+tk.Button(button_frame, text="Lịch sử", font=("Arial", 12), width=20,
+          bg="white", fg="black", bd=2, relief="solid",
+          highlightbackground="#ffc0cb", highlightcolor="#ffc0cb",
+          highlightthickness=2, command=view_history).pack(pady=5)
 
 # Footer
-footer_frame = tk.Frame(root)
+footer_frame = tk.Frame(root, bg="#ffc0cb")
 footer_frame.pack(side=tk.BOTTOM, pady=10)
-tk.Button(footer_frame, text="Bắt đầu game", font=("Arial", 12), command=start_game).pack(side=tk.LEFT, padx=5)
-tk.Button(footer_frame, text="Đăng xuất", font=("Arial", 12), fg="red", command=logout).pack(side=tk.RIGHT, padx=5)
+
+tk.Button(footer_frame, text="Bắt đầu game", font=("Arial", 12),
+          bg="white", fg="black", bd=2, relief="solid",width=20,highlightbackground="#ffc0cb", highlightcolor="#ffc0cb", highlightthickness=2,command=start_game).pack(side=tk.LEFT, padx=5)
+
+tk.Button(footer_frame, text="Đăng xuất", font=("Arial", 12),
+          bg="white", fg="red", bd=2, relief="solid", width=20,highlightbackground="#ffc0cb", highlightcolor="#ffc0cb", highlightthickness=2,command=logout).pack(side=tk.RIGHT, padx=5)
 
 root.mainloop()
