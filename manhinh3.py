@@ -28,11 +28,11 @@ class TicTacToe:
         self.game_over = False
 
         self.root = tk.Tk()
-        self.root.attributes('-modified', True)
+        self.root.attributes("-alpha", True)
         self.root.title(f"Tic-Tac-Toe - {self.board_size} | {self.difficulty} | {self.game_mode}")
         self.root.configure(bg="#ffe6f0")
 
-        self.cell_size = 120
+        self.cell_size = 80
         self.canvas_size = self.cell_size * self.size
 
         self.canvas = tk.Canvas(self.root, width=self.canvas_size, height=self.canvas_size,
@@ -48,7 +48,7 @@ class TicTacToe:
         self.turn_label = tk.Label(
             self.info_frame,
             text=f"Lượt: {self.current_player}",
-            font=("Arial", 40, "bold"),
+            font=("Arial", 30, "bold"),
             fg="#ff4d88",
             bg="#ffe6f0"
         )
@@ -60,7 +60,7 @@ class TicTacToe:
         tk.Button(
             self.control_frame,
             text="🔁 Chơi lại",
-            font=("Arial", 30),
+            font=("Arial", 25),
             width=20,
             bg="#ffb3d9",
             command=self.reset_game
@@ -69,7 +69,7 @@ class TicTacToe:
         tk.Button(
             self.control_frame,
             text="⏪ Thoát",
-            font=("Arial", 30),
+            font=("Arial", 25),
             width=20,
             bg="#ffb3d9",
             command=self.back_to_menu
