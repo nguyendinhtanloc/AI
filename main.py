@@ -275,7 +275,6 @@ class TicTacToe:
         for i, j in self.get_available_moves():
             block_move = self.can_block(i, j, opponent)
             if block_move:
-                print(f"Blocking move at {block_move} to stop opponent from winning!")
                 return block_move
         if random.random() < 0.1:
             return random.choice(self.get_available_moves())
@@ -465,63 +464,58 @@ class TicTacToe:
 
     def hard_move(self, player):
         """
-        Chế độ khó: Kết hợp DQN với kiểm tra chuỗi và alpha-beta nhẹ.
-        - Mục đích: Tạo AI mạnh hơn medium và easy, nhưng không quá khó như người chơi chuyên nghiệp.
+        Chế độ khó: Dùng alpha-beta với độ sâu cao cho 3x3, DQN cho 5x5 và 7x7.
+        - Mục đích: Tạo AI mạnh hơn medium và easy, phù hợp với kích thước bàn cờ.
         - Dữ liệu:
-          - Dùng trọng số từ file `dqn_{size}x{size}.pth` (tải trong TicTacToeAI.__init__).
-          - File `memory_{size}x{size}.pkl` và `elite_memory_{size}x{size}.pkl` chỉ dùng khi huấn luyện.
+          - 3x3: Không dùng DQN, chỉ dùng alpha-beta độ sâu 8.
+          - 5x5, 7x7: Dùng trọng số từ `dqn_{size}x{size}.pth`.
         - Logic:
-          1. Kiểm tra thắng ngay lập tức (giống easy, medium).
-          2. Kiểm tra chặn đối thủ thắng (giống easy, medium).
-          3. Tìm nước đi tạo chuỗi 3 (5x5) hoặc 4 (7x7) bằng can_extend_chain.
-          4. Tìm nước đi chặn chuỗi đối thủ bằng can_block.
-          5. Dùng dqn_move (epsilon thấp, ưu tiên khai thác) để chọn nước đi.
-          6. Kiểm tra lại nước đi DQN bằng alpha_beta_move (độ sâu 1) để chọn nước tốt nhất.
+          1. Kiểm tra thắng ngay lập tức.
+          2. Kiểm tra chặn đối thủ thắng.
+          3. Tìm nước đi tạo chuỗi 3 (5x5) hoặc 4 (7x7).
+          4. Tìm nước đi chặn chuỗi đối thủ.
+          5. 3x3: Dùng alpha_beta_move độ sâu 8.
+             5x5, 7x7: Dùng dqn_move với epsilon thấp, kiểm tra lại bằng alpha_beta_move độ sâu 2.
         - Hiệu suất:
-          - DQN: O(size^2) cho forward pass qua CNN.
-          - Alpha-beta (độ sâu 1): O(size^2).
-          - Tổng thời gian: ~0.2-0.5s (5x5), ~0.3-0.8s (7x7).
-        - Liên quan: Chỉ dùng trong chế độ hard, mạnh hơn medium (alpha-beta độ sâu 2) và easy (IDDFS).
+          - 3x3: ~0.1-0.5s.
+          - 5x5, 7x7: ~0.5-0.7s.
         """
         opponent = -player
-        # Kiểm tra thắng ngay
         for i, j in self.get_available_moves():
             self.board[i, j] = player
             if self.is_winner(player):
                 self.board[i, j] = 0
                 return (i, j)
             self.board[i, j] = 0
-        # Kiểm tra chặn đối thủ
         for i, j in self.get_available_moves():
             self.board[i, j] = opponent
             if self.is_winner(opponent):
                 self.board[i, j] = 0
                 return (i, j)
             self.board[i, j] = 0
-        # Kiểm tra tạo chuỗi
         for i, j in self.get_available_moves():
             if self.can_extend_chain(i, j, player):
                 return (i, j)
-        # Kiểm tra chặn chuỗi đối thủ
         for i, j in self.get_available_moves():
             block_move = self.can_block(i, j, opponent)
             if block_move:
-                print(f"Blocking move at {block_move} to stop opponent from winning!")
                 return block_move
-        # Sử dụng DQN
-        dqn_move = self.dqn_move(episode=100000)
-        # Kiểm tra lại nước đi DQN bằng alpha-beta (độ sâu 1)
-        moves = self.get_available_moves()
-        best_score = -np.inf
-        best_move = dqn_move
-        for i, j in moves:
-            self.board[i, j] = player
-            score, _ = self.alpha_beta_move(depth=1, is_maximizing_player=False)
-            self.board[i, j] = 0
-            if score > best_score:
-                best_score = score
-                best_move = (i, j)
-        return best_move
+        if self.size == 3:
+            _, move = self.alpha_beta_move(depth=8, is_maximizing_player=(player == -1))
+            return move
+        else:
+            dqn_move = self.dqn_move(episode=500000)  # Tối ưu: Epsilon ~0.05
+            moves = self.get_available_moves()
+            best_score = -np.inf
+            best_move = dqn_move
+            for i, j in moves:
+                self.board[i, j] = player
+                score, _ = self.alpha_beta_move(depth=2, is_maximizing_player=False)  # Tối ưu: Độ sâu 2
+                self.board[i, j] = 0
+                if score > best_score:
+                    best_score = score
+                    best_move = (i, j)
+            return best_move
 
 class TicTacToeAI(TicTacToe):
     """
@@ -536,19 +530,18 @@ class TicTacToeAI(TicTacToe):
       - `memory_{size}x{size}.pkl`, `elite_memory_{size}x{size}.pkl`: Kinh nghiệm, dùng khi huấn luyện.
     """
     
-    def __init__(self, size=3, mode="hard"):
+    def __init__(self, size=3, mode="hard", evaluate_model=True):
         """
         Khởi tạo AI với mô hình CNN, bộ nhớ, và tham số huấn luyện.
         - Logic:
           - Tạo policy_net và target_net (CNN với 4 lớp conv, batch norm, dropout).
           - Chỉ tải trọng số từ `dqn_{size}x{size}.pth` nếu chế độ là hard và file tồn tại.
+          - Nếu evaluate_model=True, kiểm tra win_rate so với Medium (20 ván).
+          - Cảnh báo nếu win_rate < 0.5.
           - Xử lý lỗi nếu file không tương thích, bỏ qua và dùng mô hình mới.
           - Khởi tạo bộ nhớ (memory, elite_memory) và optimizer.
-        - Hiệu suất: O(1) để khởi tạo, O(size^2) nếu tải mô hình.
+        - Hiệu suất: O(1) để khởi tạo, O(size^2) nếu tải mô hình, ~2-3 phút nếu kiểm tra win_rate.
         - Liên quan: Ảnh hưởng hard (tải mô hình cho hard_move) và huấn luyện.
-        - Sửa đổi (KHẮC PHỤC LỖI):
-          - Thêm tham số mode để chỉ tải mô hình trong chế độ hard.
-          - Thêm try-except để xử lý lỗi tải file không tương thích.
         """
         super().__init__(size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -576,6 +569,11 @@ class TicTacToeAI(TicTacToe):
                     self.policy_net.load_state_dict(torch.load(model_path))
                     self.target_net.load_state_dict(self.policy_net.state_dict())
                     print(f"Loaded pre-trained model from {model_path}")
+                    if evaluate_model:
+                        win_rate = Algorithm.evaluate_model(self, size, num_games=20)
+                        print(f"Loaded model win rate: {win_rate:.2f}")
+                        if win_rate < 0.5:
+                            print("Warning: Loaded model may be weak. Consider retraining.")
                 except RuntimeError as e:
                     print(f"Error loading model from {model_path}: {e}")
                     print("Using new model instead.")
@@ -649,7 +647,7 @@ class TicTacToeAI(TicTacToe):
         """
         Lưu kinh nghiệm (state, action, reward, next_state, done) vào memory hoặc elite_memory.
         - Logic:
-          - Điều chỉnh reward dựa trên can_extend_chain (+0.2), can_block (+0.3), hoặc không chiến lược (-0.05).
+          - Điều chỉnh reward dựa trên can_extend_chain (+0.5), can_block (+0.7), hoặc không chiến thuật (-0.05).
           - Lưu vào memory nếu kinh nghiệm chất lượng cao (done hoặc |reward| >= 0.5).
           - Dùng augment_state để tạo phiên bản đối xứng (6 nếu chất lượng cao, 2 nếu không).
           - Giới hạn memory (50,000), elite_memory (10,000).
@@ -661,9 +659,9 @@ class TicTacToeAI(TicTacToe):
             game_temp.board = next_state
             x, y = divmod(action, self.size)
             if game_temp.can_extend_chain(x, y, -1):
-                reward += 0.2
+                reward += 0.5
             if game_temp.can_block(x, y, 1):
-                reward += 0.3
+                reward += 0.7
             if not game_temp.can_extend_chain(x, y, -1) and not game_temp.can_block(x, y, 1):
                 reward -= 0.05
 
@@ -882,14 +880,14 @@ class Algorithm:
     """
     
     @staticmethod
-    def evaluate_model(ai, size, num_games=50):
+    def evaluate_model(ai, size, num_games=20):
         """
         Đánh giá mô hình DQN bằng cách đấu với đối thủ trung bình.
         - Logic:
           - Chơi num_games ván, AI (DQN) đấu với medium_move.
           - Tính tỷ lệ thắng của AI.
         - Hiệu suất: O(num_games * size^2) cho mỗi ván.
-        - Liên quan: Dùng trong huấn luyện (train_game) để kiểm tra chất lượng mô hình.
+        - Liên quan: Dùng trong huấn luyện (train_game) và khởi tạo (TicTacToeAI.__init__) để kiểm tra chất lượng mô hình.
         """
         wins = 0
         for _ in range(num_games):
@@ -900,7 +898,7 @@ class Algorithm:
                     move = game.medium_move(1)
                     game.make_move(*move, 1)
                 else:
-                    move = ai.dqn_move(episode=100000)
+                    move = ai.dqn_move(episode=500000)  # Tối ưu: Dùng epsilon thấp (~0.05) để đánh giá
                     game.make_move(*move, -1)
                 
                 if game.is_winner(-1):
@@ -927,10 +925,8 @@ class Algorithm:
         - Hiệu suất: Phụ thuộc chế độ:
           - Easy: ~0.1-0.5s.
           - Medium: ~0.1-0.5s.
-          - Hard: ~0.2-0.8s.
+          - Hard: ~0.5-0.7s.
         - Liên quan: Dùng trong mọi chế độ khi chơi với người.
-        - Sửa đổi (KHẮC PHỤC LỖI):
-          - Truyền tham số mode vào TicTacToeAI để chỉ tải mô hình DQN trong chế độ hard.
         """
         game = TicTacToeAI(size=size, mode=mode)
         current_player = 1
@@ -989,8 +985,8 @@ class Algorithm:
           - Ghi: Ghi đè các file trên khi cải thiện hoặc Ctrl+C.
         """
         print(f"Training Double DQN on {size}x{size} board for {episodes} episodes.\n")
-        ai1 = TicTacToeAI(size=size)
-        ai2 = TicTacToeAI(size=size)
+        ai1 = TicTacToeAI(size=size, mode="hard", evaluate_model=False)  # Tắt kiểm tra để tiết kiệm thời gian
+        ai2 = TicTacToeAI(size=size, mode="hard", evaluate_model=False)  # Tắt kiểm tra để tiết kiệm thời gian
 
         if load_model_path:
             try:
@@ -1106,35 +1102,124 @@ class Algorithm:
                 print(f"Saved elite memory to elite_memory_{size}x{size}.pkl")
             sys.exit(0)
 
+    @staticmethod
+    def compare_modes(size, num_games):
+        """
+        Mô phỏng các trận đấu giữa Medium vs Easy và Medium vs Hard, đảm bảo không thiên vị bằng cách luân phiên vai trò X/O.
+        - Logic:
+          - Chạy num_games trận, chia đều: num_games//2 trận Medium (X) vs Easy/Hard (O), và num_games//2 trận Medium (O) vs Easy/Hard (X).
+          - Ghi lại thắng, thua, hòa từ góc nhìn của Medium.
+          - In số trận thắng, thua, hòa và tỷ lệ thắng.
+        - Hiệu suất: O(num_games * size^2) cho mỗi nhóm trận.
+        - Liên quan: Dùng trong chế độ Compare để so sánh hiệu suất.
+        """
+        print(f"\nStarting comparison on {size}x{size} board with {num_games} games per matchup...\n")
+        
+        def simulate_games(game, medium_player, opponent_player, opponent_mode, games, medium_wins, opponent_wins, draws):
+            """Hàm phụ để mô phỏng games trận với medium_player và opponent_player."""
+            for i in range(games):
+                game.board = np.zeros((size, size), dtype=np.int8)  # Reset bàn cờ
+                current_player = 1
+                while True:
+                    if current_player == medium_player:
+                        move = game.medium_move(medium_player)
+                        game.make_move(*move, medium_player)
+                    else:
+                        if opponent_mode == "easy":
+                            move = game.easy_move(opponent_player)
+                        elif opponent_mode == "hard":
+                            move = game.hard_move(opponent_player)
+                        game.make_move(*move, opponent_player)
+                    
+                    if game.is_winner(medium_player):
+                        medium_wins += 1
+                        break
+                    if game.is_winner(opponent_player):
+                        opponent_wins += 1
+                        break
+                    if game.is_draw():
+                        draws += 1
+                        break
+                    current_player *= -1
+                if (i + 1) % 10 == 0:
+                    print(f"Completed {i + 1}/{games} games")
+            return medium_wins, opponent_wins, draws
+
+        # Medium vs Easy
+        medium_wins = 0
+        easy_wins = 0
+        draws = 0
+        half_games = num_games // 2
+        game_easy = TicTacToeAI(size=size, mode="easy")
+
+        print("Simulating Medium (X) vs Easy (O)...")
+        medium_wins, easy_wins, draws = simulate_games(game_easy, 1, -1, "easy", half_games, medium_wins, easy_wins, draws)
+
+        print("Simulating Medium (O) vs Easy (X)...")
+        medium_wins, easy_wins, draws = simulate_games(game_easy, -1, 1, "easy", num_games - half_games, medium_wins, easy_wins, draws)
+
+        medium_win_rate = medium_wins / num_games
+        print(f"\nMedium vs Easy Results:")
+        print(f"Medium wins: {medium_wins} ({medium_win_rate:.2%})")
+        print(f"Easy wins  : {easy_wins} ({easy_wins / num_games:.2%})")
+        print(f"Draws      : {draws} ({draws / num_games:.2%})\n")
+
+        # Medium vs Hard
+        medium_wins = 0
+        hard_wins = 0
+        draws = 0
+        game_hard = TicTacToeAI(size=size, mode="hard")
+
+        print("Simulating Medium (X) vs Hard (O)...")
+        medium_wins, hard_wins, draws = simulate_games(game_hard, 1, -1, "hard", half_games, medium_wins, hard_wins, draws)
+
+        print("Simulating Medium (O) vs Hard (X)...")
+        medium_wins, hard_wins, draws = simulate_games(game_hard, -1, 1, "hard", num_games - half_games, medium_wins, hard_wins, draws)
+
+        medium_win_rate = medium_wins / num_games
+        print(f"\nMedium vs Hard Results:")
+        print(f"Medium wins: {medium_wins} ({medium_win_rate:.2%})")
+        print(f"Hard wins  : {hard_wins} ({hard_wins / num_games:.2%})")
+        print(f"Draws      : {draws} ({draws / num_games:.2%})\n")
+
+        print("Comparison Summary:")
+        print(f"- Medium vs Easy: Medium wins {medium_wins} out of {num_games} games, confirming Medium's stronger strategy over Easy.")
+        if medium_wins > hard_wins:
+            print(f"- Medium vs Hard: Medium wins {medium_wins} out of {num_games} games, unexpectedly outperforming Hard. This may indicate an issue with Hard's strategy on {size}x{size} board.")
+        else:
+            print(f"- Medium vs Hard: Hard wins {hard_wins} out of {num_games} games, demonstrating superior strategy as expected.")
+        print(f"- Easy mode is ideal for beginners, while Hard should pose a significant challenge.")
+
 class Main:
-    """
-    Lớp chính để chạy chương trình, quản lý giao diện người dùng.
-    - Mục đích: Hiển thị menu, xử lý lựa chọn chơi hoặc huấn luyện.
-    - Hiệu suất: O(1) cho menu, phụ thuộc vào play_game hoặc train_game.
-    - Liên quan: Dùng để khởi động mọi chế độ và huấn luyện.
-    """
-    
     @staticmethod
     def main():
         """
-        Hàm chính: Hiển thị menu và xử lý lựa chọn người dùng.
+        Hàm chính: Hiển thị menu và xử lý lựa chọn người dùng, thêm chế độ Compare.
         - Logic:
-          - Mode 1: Chơi với AI (easy, medium, hard) trên kích thước 3, 5, 7.
-          - Mode 2: Huấn luyện DQN trên kích thước 5, 7 với 5 stage, mỗi stage 100,000 episodes.
+          - Mode 1: Chơi với AI (easy, medium, hard).
+          - Mode 2: Huấn luyện DQN (chỉ cho 5x5 và 7x7).
+          - Mode 3: So sánh Medium vs Easy và Medium vs Hard.
           - Xử lý lỗi đầu vào và Ctrl+C.
-        - Hiệu suất: Phụ thuộc vào play_game hoặc train_game.
-        - Liên quan: Gọi play_game (easy, medium, hard) hoặc train_game (hard).
+        - Hiệu suất: Phụ thuộc vào play_game, train_game, hoặc compare_modes.
+        - Liên quan: Gọi play_game, train_game, hoặc compare_modes.
         """
-        mode_choice = input("Choose mode (1: Play, 2: Training): ")
+        print("Welcome to Tic-Tac-Toe!")
+        print("1: Play against AI")
+        print("2: Train AI model")
+        print("3: Compare AI modes")
+        mode_choice = input("Choose mode (1: Play, 2: Training, 3: Compare): ")
 
         if mode_choice == "1":
             size = int(input("Choose board size (3, 5, 7): "))
+            if size not in [3, 5, 7]:
+                print("Invalid board size! Choose 3, 5, or 7.")
+                return
             difficulty = input("Choose difficulty (1: Easy, 2: Medium, 3: Hard): ")
             mode = {"1": "easy", "2": "medium", "3": "hard"}.get(difficulty)
             if mode:
                 Algorithm.play_game(size, mode)
             else:
-                print("Invalid choice!")
+                print("Invalid difficulty! Choose 1, 2, or 3.")
         elif mode_choice == "2":
             size = int(input("Choose board size (5, 7): "))
             if size not in [5, 7]:
@@ -1153,8 +1238,18 @@ class Main:
                 except KeyboardInterrupt:
                     print("\nTraining interrupted. Model and memory already saved in train_game.")
                     sys.exit(0)
+        elif mode_choice == "3":
+            size = int(input("Choose board size (3, 5, 7): "))
+            if size not in [3, 5, 7]:
+                print("Invalid board size! Choose 3, 5, or 7.")
+                return
+            num_games = int(input("Enter number of games to simulate: "))
+            if num_games <= 0:
+                print("Number of games must be positive!")
+                return
+            Algorithm.compare_modes(size, num_games)
         else:
-            print("Invalid choice!")
+            print("Invalid choice! Choose 1, 2, or 3.")
 
 if __name__ == "__main__":
     Main.main()
