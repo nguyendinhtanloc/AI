@@ -155,7 +155,7 @@ class TicTacToe:
             self.board[i, j] = 0
         available_moves = len(self.get_available_moves())
         max_depth = 3
-        if self.size == 7 and available_moves > 20:
+        if self.size != 3 and available_moves > 20:
             max_depth = 2
         time_limit = 0.2 if self.size == 3 else 0.5 if self.size == 5 else 0.8
         move = self.iddfs_move(player, max_depth=max_depth, time_limit=time_limit)
