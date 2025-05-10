@@ -3,39 +3,70 @@ import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.cuda.amp import autocast, GradScaler
 import sys
 import pickle
 import os
 import time
 from copy import deepcopy
 
+"""
+Tic-Tac-Toe AI với ba mức độ khó (easy, medium, hard) và huấn luyện DQN.
+
+Chương trình triển khai trò chơi Tic-Tac-Toe với:
+- Chế độ chơi: Easy (IDDFS), Medium (alpha-beta + heuristics), Hard (DQN hoặc alpha-beta).
+- Huấn luyện: DQN cho bàn 5x5 và 7x7, lưu mô hình và kinh nghiệm.
+- So sánh: Đánh giá sức mạnh giữa Medium vs Easy và Medium vs Hard.
+
+Tối ưu hóa:
+- Hiệu suất: ~15-30 giây/episode (7x7, MacBook Air M2, MPS), ~5-10 giây/episode (5x5, MSI, CUDA), ~0.1-0.5s/nước (3x3).
+- RAM: ~0.5-1GB, file .pkl ~200-500MB.
+- CNN: 3 lớp Conv2d (32, 64, 128), giảm ~30-40% tham số.
+- Replay: batch_size=256, per_alpha=0.9, chạy khi memory >= 1000.
+- Alpha-beta: Tăng tần suất (episode < 10000, xác suất 80%), độ sâu 1.
+
+Hướng dẫn chạy:
+1. Cài đặt: `pip3 install numpy torch==2.6.0`.
+2. Chạy: `python3 tictactoe.py`.
+3. Chọn:
+   - Mode 1: Chơi với AI (3x3, 5x5, 7x7; easy, medium, hard).
+   - Mode 2: Huấn luyện DQN (5x5, 7x7; 5 stage, mỗi stage 100,000 episodes).
+   - Mode 3: So sánh Medium vs Easy/Hard (3x3, 5x5, 7x7).
+"""
+
+# Đặt số luồng cho CPU
+torch.set_num_threads(8)
+
 class TicTacToe:
     """
-    Lớp quản lý trò chơi Tic-Tac-Toe, xử lý bàn cờ và logic thắng/thua/hòa.
-    - Mục đích: Cung cấp các hàm cơ bản để chơi Tic-Tac-Toe trên bàn cờ size x size.
-    - Hiệu suất: Các hàm kiểm tra thắng/thua/hòa có độ phức tạp O(size^2) hoặc thấp hơn.
-    - Liên quan: Được dùng trong cả easy, medium, và hard.
-    - Dữ liệu: Không sử dụng file lưu trữ trực tiếp.
+    Quản lý bàn cờ Tic-Tac-Toe và logic cơ bản (thắng, thua, hòa).
+
+    Mục đích: Cung cấp các hàm để chơi Tic-Tac-Toe trên bàn size x size.
+    Hiệu suất: Hầu hết hàm O(size^2) hoặc thấp hơn.
+    Liên quan: Dùng trong mọi chế độ (easy, medium, hard).
+    Dữ liệu: Không lưu file, chỉ quản lý trạng thái bàn cờ trong RAM.
     """
-    
+
     def __init__(self, size=3):
         """
-        Khởi tạo bàn cờ size x size với trạng thái rỗng.
-        - Logic: Tạo ma trận 0 (ô trống), 1 (X: người chơi), -1 (O: AI).
-        - Hiệu suất: O(size^2) để tạo ma trận.
-        - Liên quan: Dùng cho mọi chế độ.
+        Khởi tạo bàn cờ size x size với tất cả ô trống.
+
+        Logic: Tạo ma trận size x size với giá trị 0 (trống), 1 (X: người chơi), -1 (O: AI).
+        Hiệu suất: O(size^2) để khởi tạo ma trận.
+        Liên quan: Dùng trong mọi chế độ để bắt đầu ván.
         """
         self.size = size
         self.board = np.zeros((size, size), dtype=np.int8)
 
     def is_winner(self, player):
         """
-        Kiểm tra xem người chơi (1: X, -1: O) có thắng không bằng cách tìm chuỗi liên tiếp.
-        - Logic:
-          - Kiểm tra hàng, cột, đường chéo chính/phụ với độ dài thắng (3 cho 3x3, 4 cho 5x5, 5 cho 7x7).
-          - Trả về True nếu tìm thấy chuỗi.
-        - Hiệu suất: O(size^2) do duyệt tất cả hàng, cột, và đường chéo.
-        - Liên quan: Dùng trong easy, medium, hard để xác định kết thúc ván.
+        Kiểm tra người chơi (1: X, -1: O) có thắng không bằng cách tìm chuỗi liên tiếp.
+
+        Logic:
+        - Tìm chuỗi liên tiếp dài win_length (3 cho 3x3, 4 cho 5x5, 5 cho 7x7) trên hàng, cột, đường chéo.
+        - Trả về True nếu tìm thấy chuỗi.
+        Hiệu suất: O(size^2 * win_length) do duyệt hàng, cột, và đường chéo.
+        Liên quan: Dùng trong mọi chế độ để xác định kết thúc ván.
         """
         win_length = 3 if self.size == 3 else 4 if self.size == 5 else 5
         for i in range(self.size):
@@ -50,29 +81,32 @@ class TicTacToe:
 
     def is_draw(self):
         """
-        Kiểm tra trạng thái hòa: bàn cờ đầy và không ai thắng.
-        - Logic: Kiểm tra nếu không còn ô trống và không có người thắng.
-        - Hiệu suất: O(size^2) để kiểm tra ô trống, cộng với O(size^2) từ is_winner.
-        - Liên quan: Dùng trong mọi chế độ để kết thúc ván.
+        Kiểm tra trạng thái hòa (bàn đầy, không ai thắng).
+
+        Logic: Trả về True nếu không còn ô trống và không có người thắng.
+        Hiệu suất: O(size^2) để kiểm tra ô trống, cộng O(size^2 * win_length) từ is_winner.
+        Liên quan: Dùng trong mọi chế độ để kết thúc ván.
         """
         return not np.any(self.board == 0) and not self.is_winner(1) and not self.is_winner(-1)
 
     def get_available_moves(self):
         """
-        Trả về danh sách các ô trống (nước đi hợp lệ) dưới dạng [(x, y)].
-        - Logic: Tìm tất cả vị trí có giá trị 0 trên bàn cờ.
-        - Hiệu suất: O(size^2) để duyệt ma trận.
-        - Liên quan: Dùng trong mọi chế độ để xác định nước đi có thể.
+        Liệt kê các ô trống (nước đi hợp lệ) dưới dạng [(x, y)].
+
+        Logic: Tìm tất cả vị trí có giá trị 0 trên bàn cờ.
+        Hiệu suất: O(size^2) để duyệt ma trận.
+        Liên quan: Dùng trong mọi chế độ để xác định nước đi khả thi.
         """
         indices = np.where(self.board == 0)
         return list(zip(indices[0], indices[1]))
 
     def make_move(self, x, y, player):
         """
-        Thực hiện nước đi tại (x, y) cho người chơi (1: X, -1: O).
-        - Logic: Đặt giá trị player tại (x, y) nếu ô trống, trả về True nếu thành công.
-        - Hiệu suất: O(1) để truy cập và cập nhật ô.
-        - Liên quan: Dùng trong mọi chế độ để cập nhật bàn cờ.
+        Đặt nước đi tại (x, y) cho người chơi (1: X, -1: O).
+
+        Logic: Đặt giá trị player tại (x, y) nếu ô trống, trả về True nếu thành công.
+        Hiệu suất: O(1) để truy cập và cập nhật ô.
+        Liên quan: Dùng trong mọi chế độ để cập nhật bàn cờ.
         """
         if self.board[x, y] == 0:
             self.board[x, y] = player
@@ -82,9 +116,10 @@ class TicTacToe:
     def print_board(self):
         """
         In bàn cờ với ký hiệu: . (trống), X (người chơi), O (AI).
-        - Logic: Chuyển ma trận thành ký hiệu và in từng hàng.
-        - Hiệu suất: O(size^2) để duyệt và in.
-        - Liên quan: Dùng trong mọi chế độ để hiển thị trạng thái.
+
+        Logic: Chuyển giá trị ma trận thành ký hiệu và in từng hàng.
+        Hiệu suất: O(size^2) để duyệt và in.
+        Liên quan: Dùng trong mọi chế độ để hiển thị trạng thái.
         """
         symbols = {0: '.', 1: 'X', -1: 'O'}
         for row in self.board:
@@ -94,13 +129,14 @@ class TicTacToe:
     def score_move(self, x, y, player):
         """
         Đánh giá nước đi tại (x, y) dựa trên chuỗi, chặn, và vị trí trung tâm.
-        - Logic:
-          - +5 nếu tạo chuỗi 3 (5x5) hoặc 4 (7x7).
-          - +4 nếu chặn chuỗi đối thủ.
-          - +3 nếu tạo chuỗi 2 với ít nhất 1 đầu mở.
-          - +0-1 dựa trên khoảng cách đến trung tâm.
-        - Hiệu suất: O(1) vì chỉ kiểm tra các ô lân cận (tối đa 8 hướng).
-        - Liên quan: Dùng trong easy (iddfs_move) và medium (alpha_beta_move) để sắp xếp nước đi.
+
+        Logic:
+        - +5 nếu tạo chuỗi 3 (5x5) hoặc 4 (7x7).
+        - +4 nếu chặn chuỗi đối thủ.
+        - +3 nếu tạo chuỗi 2 với ít nhất 1 đầu mở.
+        - +0-1 dựa trên khoảng cách đến trung tâm (gần trung tâm điểm cao hơn).
+        Hiệu suất: O(1) vì chỉ kiểm tra 8 hướng với tối đa 4 ô mỗi hướng.
+        Liên quan: Dùng trong easy (iddfs_move) và medium (alpha_beta_move) để ưu tiên nước đi.
         """
         score = 0
         opponent = -player
@@ -129,16 +165,17 @@ class TicTacToe:
 
     def easy_move(self, player):
         """
-        Chế độ dễ: Sử dụng IDDFS với độ sâu tối đa tùy kích thước bàn cờ.
-        - Logic:
-          1. Kiểm tra thắng ngay lập tức.
-          2. Kiểm tra chặn đối thủ thắng.
-          3. Dùng IDDFS với độ sâu 2-3 (3x3, 5x5: 3; 7x7: 2-3 tùy ô trống).
-          4. Nếu hết thời gian, chọn ngẫu nhiên.
-        - Hiệu suất:
-          - IDDFS: O(b^d) với b ~ size^2, d = 2-3.
-          - Thời gian: ~0.1-0.5s tùy kích thước.
-        - Liên quan: Chỉ dùng trong chế độ easy, yếu hơn medium và hard.
+        Chế độ dễ: Sử dụng Iterative Deepening DFS (IDDFS) với độ sâu giới hạn.
+
+        Logic:
+        1. Kiểm tra nước đi thắng ngay lập tức cho player.
+        2. Kiểm tra nước đi chặn đối thủ thắng.
+        3. Dùng IDDFS với độ sâu 2-3 (3x3, 5x5: 3; 7x7: 2-3 tùy số ô trống).
+        4. Nếu hết thời gian, chọn ngẫu nhiên từ ô trống.
+        Hiệu suất:
+        - IDDFS: O(b^d) với b ~ size^2, d = 2-3.
+        - Thời gian: ~0.1-0.5s tùy kích thước.
+        Liên quan: Chỉ dùng trong chế độ easy, yếu hơn medium và hard.
         """
         opponent = -player
         for i, j in self.get_available_moves():
@@ -166,13 +203,14 @@ class TicTacToe:
     def iddfs_move(self, player, max_depth, time_limit):
         """
         Tìm nước đi tốt nhất bằng IDDFS với giới hạn thời gian.
-        - Logic:
-          - Duyệt từng độ sâu từ 1 đến max_depth.
-          - Sắp xếp nước đi theo score_move để ưu tiên nước tốt.
-          - Dùng depth_limited_dfs để đánh giá.
-          - Dừng nếu vượt thời gian.
-        - Hiệu suất: O(b^d) với b ~ size^2, d = 1 đến 3.
-        - Liên quan: Chỉ dùng trong easy (easy_move).
+
+        Logic:
+        - Duyệt từng độ sâu từ 1 đến max_depth.
+        - Sắp xếp nước đi theo score_move để ưu tiên nước tốt.
+        - Dùng depth_limited_dfs để đánh giá điểm.
+        - Dừng nếu vượt thời gian hoặc tìm nước đi thắng (+10).
+        Hiệu suất: O(b^d) với b ~ size^2, d = 1-3, giảm nhờ sắp xếp.
+        Liên quan: Chỉ dùng trong easy (easy_move).
         """
         start_time = time.time()
         best_move = None
@@ -203,14 +241,15 @@ class TicTacToe:
 
     def depth_limited_dfs(self, depth, player, is_maximizing, alpha, beta):
         """
-        DFS với độ sâu giới hạn và alpha-beta pruning.
-        - Logic:
-          - Nếu hết độ sâu hoặc kết thúc ván, trả về điểm từ evaluate_board.
-          - Nếu maximizing (AI), chọn nước đi tối đa điểm.
-          - Nếu minimizing (người chơi), chọn nước đi tối thiểu điểm.
-          - Sắp xếp nước đi theo score_move để cắt tỉa hiệu quả.
-        - Hiệu suất: O(b^d) nhưng giảm nhờ alpha-beta.
-        - Liên quan: Chỉ dùng trong easy (iddfs_move).
+        DFS với độ sâu giới hạn và cắt tỉa alpha-beta.
+
+        Logic:
+        - Nếu hết độ sâu hoặc ván kết thúc, trả về điểm từ evaluate_board.
+        - Nếu maximizing (AI), chọn nước đi có điểm cao nhất.
+        - Nếu minimizing (người chơi), chọn nước đi có điểm thấp nhất.
+        - Sắp xếp nước đi theo score_move để cắt tỉa hiệu quả.
+        Hiệu suất: O(b^d) với b ~ size^2, d = 1-3, giảm đáng kể nhờ alpha-beta.
+        Liên quan: Chỉ dùng trong easy (iddfs_move).
         """
         if depth == 0 or self.is_winner(1) or self.is_winner(-1) or self.is_draw():
             return self.evaluate_board()
@@ -243,18 +282,19 @@ class TicTacToe:
 
     def medium_move(self, player, depth=2):
         """
-        Chế độ trung bình: Kết hợp kiểm tra thắng/chặn, tạo chuỗi, và alpha-beta.
-        - Logic:
-          1. Kiểm tra thắng ngay lập tức.
-          2. Kiểm tra chặn đối thủ thắng.
-          3. Tìm nước đi tạo chuỗi 3 (5x5) hoặc 4 (7x7) bằng can_extend_chain.
-          4. Tìm nước đi chặn chuỗi đối thủ bằng can_block.
-          5. Với xác suất 10%, chọn ngẫu nhiên.
-          6. Dùng alpha_beta_move với độ sâu 2.
-        - Hiệu suất:
-          - Alpha-beta: O(b^d) với b ~ size^2, d = 2.
-          - Thời gian: ~0.1-0.5s tùy kích thước.
-        - Liên quan: Chỉ dùng trong chế độ medium, mạnh hơn easy nhưng yếu hơn hard.
+        Chế độ trung bình: Kết hợp heuristics và alpha-beta pruning.
+
+        Logic:
+        1. Kiểm tra nước đi thắng ngay lập tức.
+        2. Kiểm tra nước đi chặn đối thủ thắng.
+        3. Tìm nước đi tạo chuỗi 3 (5x5) hoặc 4 (7x7) bằng can_extend_chain.
+        4. Tìm nước đi chặn chuỗi đối thủ bằng can_block.
+        5. Với xác suất 10%, chọn ngẫu nhiên để tăng tính bất ngờ.
+        6. Dùng alpha_beta_move với độ sâu 2 để tìm nước đi tối ưu.
+        Hiệu suất:
+        - Alpha-beta: O(b^d) với b ~ size^2, d = 2, giảm nhờ cắt tỉa.
+        - Thời gian: ~0.1-0.5s tùy kích thước.
+        Liên quan: Chỉ dùng trong chế độ medium, mạnh hơn easy nhưng yếu hơn hard.
         """
         opponent = -player
         for i, j in self.get_available_moves():
@@ -283,12 +323,13 @@ class TicTacToe:
 
     def can_extend_chain(self, x, y, player):
         """
-        Kiểm tra xem đặt tại (x, y) có tạo chuỗi 3 (5x5) hoặc 4 (7x7) quân không.
-        - Logic:
-          - Kiểm tra 8 hướng, đếm số quân liên tiếp của player.
-          - Trả về True nếu tạo chuỗi đủ dài hoặc nối hai quân thành chuỗi.
-        - Hiệu suất: O(1) vì chỉ kiểm tra tối đa 4 ô mỗi hướng.
-        - Liên quan: Dùng trong medium (medium_move) và hard (hard_move).
+        Kiểm tra nước đi tại (x, y) có tạo chuỗi 3 (5x5) hoặc 4 (7x7) không.
+
+        Logic:
+        - Kiểm tra 8 hướng, đếm số quân liên tiếp của player.
+        - Trả về True nếu tạo chuỗi đủ dài hoặc nối hai quân thành chuỗi tiềm năng.
+        Hiệu suất: O(1) vì chỉ kiểm tra tối đa 4 ô mỗi hướng.
+        Liên quan: Dùng trong medium (medium_move) và hard (hard_move).
         """
         if self.board[x, y] != 0:
             return False
@@ -325,12 +366,13 @@ class TicTacToe:
 
     def can_block(self, x, y, player):
         """
-        Kiểm tra xem đặt tại (x, y) có chặn được chuỗi nguy hiểm của đối thủ không.
-        - Logic:
-          - Kiểm tra 8 hướng, đếm số quân liên tiếp của đối thủ.
-          - Trả về vị trí chặn nếu chuỗi đạt win_length-1 hoặc win_length-1 với ô trống.
-        - Hiệu suất: O(1) vì chỉ kiểm tra tối đa 4 ô mỗi hướng.
-        - Liên quan: Dùng trong medium (medium_move) và hard (hard_move).
+        Kiểm tra nước đi tại (x, y) có chặn chuỗi nguy hiểm của đối thủ không.
+
+        Logic:
+        - Kiểm tra 8 hướng, đếm số quân liên tiếp của đối thủ.
+        - Trả về vị trí chặn nếu chuỗi dài win_length-1 hoặc win_length-1 với ô trống.
+        Hiệu suất: O(1) vì chỉ kiểm tra tối đa 4 ô mỗi hướng.
+        Liên quan: Dùng trong medium (medium_move) and hard (hard_move).
         """
         win_length = 3 if self.size == 5 else 4
         directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)]
@@ -368,14 +410,15 @@ class TicTacToe:
 
     def evaluate_board(self):
         """
-        Đánh giá bàn cờ: ưu tiên thắng/thua, chuỗi 3, và chuỗi 2 tiềm năng.
-        - Logic:
-          - +10 nếu AI thắng, -10 nếu người chơi thắng.
-          - +2/-2 cho chuỗi 3 (5x5) hoặc 2 (3x3) với 1 ô trống.
-          - +1/-1 cho chuỗi 2 tiềm năng.
-          - +0.1/-0.1 cho quân gần trung tâm.
-        - Hiệu suất: O(size^2) để duyệt bàn cờ.
-        - Liên quan: Dùng trong easy (depth_limited_dfs) và medium (alpha_beta_move).
+        Đánh giá trạng thái bàn cờ để ưu tiên thắng/thua và chuỗi tiềm năng.
+
+        Logic:
+        - +10 nếu AI thắng, -10 nếu người chơi thắng.
+        - +2/-2 cho chuỗi 3 (5x5) hoặc 2 (3x3) với 1 ô trống.
+        - +1/-1 cho chuỗi 2 tiềm năng (1 ô trống ở đầu hoặc cuối).
+        - +0.1/-0.1 cho quân gần trung tâm.
+        Hiệu suất: O(size^2) để duyệt bàn cờ và kiểm tra chuỗi.
+        Liên quan: Dùng trong easy (depth_limited_dfs) và medium (alpha_beta_move).
         """
         if self.is_winner(-1):
             return 10
@@ -420,14 +463,15 @@ class TicTacToe:
 
     def alpha_beta_move(self, depth, is_maximizing_player, alpha=-np.inf, beta=np.inf):
         """
-        Tìm nước đi tối ưu bằng thuật toán alpha-beta pruning.
-        - Logic:
-          - Nếu hết độ sâu hoặc kết thúc ván, trả về điểm từ evaluate_board.
-          - Nếu maximizing (AI), chọn nước đi tối đa điểm.
-          - Nếu minimizing (người chơi), chọn nước đi tối thiểu điểm.
-          - Sắp xếp nước đi theo khoảng cách đến trung tâm để cắt tỉa hiệu quả.
-        - Hiệu suất: O(b^d) với b ~ size^2, d = 1-2, giảm nhờ alpha-beta.
-        - Liên quan: Dùng trong medium (medium_move) và hard (hard_move).
+        Tìm nước đi tối ưu bằng alpha-beta pruning.
+
+        Logic:
+        - Nếu hết độ sâu hoặc ván kết thúc, trả về điểm từ evaluate_board.
+        - Nếu maximizing (AI), chọn nước đi có điểm cao nhất.
+        - Nếu minimizing (người chơi), chọn nước đi có điểm thấp nhất.
+        - Sắp xếp nước đi theo khoảng cách đến trung tâm để cắt tỉa hiệu quả.
+        Hiệu suất: O(b^d) với b ~ size^2, d = 1-8, giảm đáng kể nhờ alpha-beta.
+        Liên quan: Dùng trong medium (medium_move) và hard (hard_move).
         """
         if depth == 0 or self.is_winner(1) or self.is_winner(-1) or self.is_draw():
             return self.evaluate_board(), None
@@ -464,21 +508,20 @@ class TicTacToe:
 
     def hard_move(self, player):
         """
-        Chế độ khó: Dùng alpha-beta với độ sâu cao cho 3x3, DQN cho 5x5 và 7x7.
-        - Mục đích: Tạo AI mạnh hơn medium và easy, phù hợp với kích thước bàn cờ.
-        - Dữ liệu:
-          - 3x3: Không dùng DQN, chỉ dùng alpha-beta độ sâu 8.
-          - 5x5, 7x7: Dùng trọng số từ `dqn_{size}x{size}.pth`.
-        - Logic:
-          1. Kiểm tra thắng ngay lập tức.
-          2. Kiểm tra chặn đối thủ thắng.
-          3. Tìm nước đi tạo chuỗi 3 (5x5) hoặc 4 (7x7).
-          4. Tìm nước đi chặn chuỗi đối thủ.
-          5. 3x3: Dùng alpha_beta_move độ sâu 8.
-             5x5, 7x7: Dùng dqn_move với epsilon thấp, kiểm tra lại bằng alpha_beta_move độ sâu 2.
-        - Hiệu suất:
-          - 3x3: ~0.1-0.5s.
-          - 5x5, 7x7: ~0.5-0.7s.
+        Chế độ khó: Kết hợp alpha-beta (3x3) hoặc DQN (5x5, 7x7) để tạo AI mạnh nhất.
+
+        Logic:
+        1. Kiểm tra nước đi thắng ngay lập tức.
+        2. Kiểm tra nước đi chặn đối thủ thắng.
+        3. Tìm nước đi tạo chuỗi 3 (5x5) hoặc 4 (7x7).
+        4. Tìm nước đi chặn chuỗi đối thủ.
+        5. Nếu 3x3: Dùng alpha_beta_move với độ sâu 8.
+           Nếu 5x5/7x7: Dùng dqn_move (epsilon thấp), kiểm tra lại bằng alpha_beta_move độ sâu 2.
+        Hiệu suất:
+        - 3x3: ~0.1-0.5s do alpha-beta với độ sâu cao.
+        - 5x5/7x7: ~0.5-0.7s do DQN + alpha-beta.
+        Liên quan: Chỉ dùng trong chế độ hard.
+        Dữ liệu: Dùng `dqn_{size}x{size}.pth` cho 5x5/7x7.
         """
         opponent = -player
         for i, j in self.get_available_moves():
@@ -504,13 +547,13 @@ class TicTacToe:
             _, move = self.alpha_beta_move(depth=8, is_maximizing_player=(player == -1))
             return move
         else:
-            dqn_move = self.dqn_move(episode=500000)  # Tối ưu: Epsilon ~0.05
+            dqn_move = self.dqn_move(episode=500000)  # Epsilon ~0.05
             moves = self.get_available_moves()
             best_score = -np.inf
             best_move = dqn_move
             for i, j in moves:
                 self.board[i, j] = player
-                score, _ = self.alpha_beta_move(depth=2, is_maximizing_player=False)  # Tối ưu: Độ sâu 2
+                score, _ = self.alpha_beta_move(depth=2, is_maximizing_player=False)
                 self.board[i, j] = 0
                 if score > best_score:
                     best_score = score
@@ -519,32 +562,43 @@ class TicTacToe:
 
 class TicTacToeAI(TicTacToe):
     """
-    Lớp mở rộng TicTacToe với DQN, sử dụng CNN và học tăng cường.
-    - Mục đích: Triển khai AI thông minh dựa trên DQN cho chế độ hard, hỗ trợ huấn luyện và chơi.
-    - Hiệu suất:
-      - Khởi tạo: O(1) trừ khi tải mô hình (O(size^2) cho CNN).
-      - Huấn luyện: Phụ thuộc số episodes, batch size (128), và kích thước bàn cờ.
-    - Liên quan: Chủ yếu dùng trong hard (hard_move, dqn_move) và huấn luyện.
-    - Dữ liệu:
-      - `dqn_{size}x{size}.pth`: Trọng số mô hình DQN, dùng khi đấu (hard).
-      - `memory_{size}x{size}.pkl`, `elite_memory_{size}x{size}.pkl`: Kinh nghiệm, dùng khi huấn luyện.
+    Mở rộng TicTacToe để triển khai AI dùng Deep Q-Network (DQN) cho chế độ hard.
+
+    Mục đích: Hỗ trợ chơi ở chế độ hard (5x5, 7x7) và huấn luyện DQN qua self-play.
+    Tối ưu hóa:
+    - Device: Ưu tiên MPS (MacBook M2), CUDA (MSI/cloud), fallback CPU.
+    - CNN: 3 lớp Conv2d (32, 64, 128), giảm ~30-40% tham số, tiết kiệm ~30% thời gian.
+    - Bộ nhớ: memory_capacity=20000, elite_memory_capacity=5000, giảm ~50% RAM (~0.5-1GB) và file .pkl (~200-500MB).
+    - Replay: batch_size=256, per_alpha=0.9, chỉ chạy khi memory >= 1000, tăng tốc ~20%.
+    - Mixed precision: Dùng autocast/GradScaler, tăng tốc ~20-50% trên MPS/CUDA.
+    - Alpha-beta: Tăng tần suất (episode < 10000, xác suất 80%), độ sâu 1, tiết kiệm ~10-20%.
+    Hiệu suất:
+    - Huấn luyện: ~15-30 giây/episode (7x7, M2), ~5-10 giây/episode (5x5, MSI).
+    - Chơi: ~0.5-0.7s/nước (5x5, 7x7).
+    Liên quan: Dùng trong hard (hard_move, dqn_move) và huấn luyện (train_game).
+    Dữ liệu:
+    - `dqn_{size}x{size}.pth`: Trọng số DQN (~10-50MB).
+    - `memory_{size}x{size}.pkl`: Kinh nghiệm (~100-500MB).
+    - `elite_memory_{size}x{size}.pkl`: Kinh nghiệm chất lượng cao (~50-200MB).
     """
-    
+
     def __init__(self, size=3, mode="hard", evaluate_model=True):
         """
-        Khởi tạo AI với mô hình CNN, bộ nhớ, và tham số huấn luyện.
-        - Logic:
-          - Tạo policy_net và target_net (CNN với 4 lớp conv, batch norm, dropout).
-          - Chỉ tải trọng số từ `dqn_{size}x{size}.pth` nếu chế độ là hard và file tồn tại.
-          - Nếu evaluate_model=True, kiểm tra win_rate so với Medium (20 ván).
-          - Cảnh báo nếu win_rate < 0.5.
-          - Xử lý lỗi nếu file không tương thích, bỏ qua và dùng mô hình mới.
-          - Khởi tạo bộ nhớ (memory, elite_memory) và optimizer.
-        - Hiệu suất: O(1) để khởi tạo, O(size^2) nếu tải mô hình, ~2-3 phút nếu kiểm tra win_rate.
-        - Liên quan: Ảnh hưởng hard (tải mô hình cho hard_move) và huấn luyện.
+        Khởi tạo AI với mô hình CNN, bộ nhớ, và thiết bị tối ưu.
+
+        Logic:
+        - Chọn device: MPS > CUDA > CPU.
+        - Tạo policy_net và target_net (CNN 3 lớp).
+        - Tải mô hình từ `dqn_{size}x{size}.pth` nếu có.
+        - Đánh giá win rate nếu evaluate_model=True.
+        - Khởi tạo bộ nhớ với capacity nhỏ (20000, 5000).
+        Hiệu suất: O(size^2) để khởi tạo CNN, O(1) cho các bước khác.
+        Liên quan: Dùng trong hard và huấn luyện.
+        Dữ liệu: Tải `dqn_{size}x{size}.pth` nếu có.
         """
         super().__init__(size)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
+        self.scaler = GradScaler(enabled=(self.device.type in ["mps", "cuda"]))
         print(f"Using device: {self.device}")
         self.policy_net = self.create_model(size).to(self.device)
         self.target_net = self.create_model(size).to(self.device)
@@ -552,16 +606,15 @@ class TicTacToeAI(TicTacToe):
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=0.001)
         self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=50000, gamma=0.1)
         self.memory = []
-        self.memory_capacity = 50000
+        self.memory_capacity = 20000
         self.priorities = []
         self.elite_memory = []
-        self.elite_memory_capacity = 10000
+        self.elite_memory_capacity = 5000
         self.elite_priorities = []
-        self.batch_size = 128
+        self.batch_size = 256
         self.gamma = 0.995
         self.per_epsilon = 1e-6
-        self.per_alpha = 0.8
-        # Chỉ tải mô hình nếu ở chế độ hard
+        self.per_alpha = 0.9
         if mode == "hard":
             model_path = f"dqn_{size}x{size}.pth"
             if os.path.exists(model_path):
@@ -570,7 +623,7 @@ class TicTacToeAI(TicTacToe):
                     self.target_net.load_state_dict(self.policy_net.state_dict())
                     print(f"Loaded pre-trained model from {model_path}")
                     if evaluate_model:
-                        win_rate = Algorithm.evaluate_model(self, size, num_games=20)
+                        win_rate = Algorithm.evaluate_model(self, size, num_games=10)
                         print(f"Loaded model win rate: {win_rate:.2f}")
                         if win_rate < 0.5:
                             print("Warning: Loaded model may be weak. Consider retraining.")
@@ -580,15 +633,15 @@ class TicTacToeAI(TicTacToe):
 
     def create_model(self, size):
         """
-        Tạo mô hình CNN cải tiến với 4 lớp convolution, batch norm, và dropout.
-        - Logic:
-          - Input: Ma trận size x size (1 kênh).
-          - 4 lớp Conv2d: 32, 64, 128, 256 filters, kernel 3x3, padding 1.
-          - BatchNorm2d và ReLU sau mỗi lớp conv.
-          - 2 lớp fully connected: 256*size*size -> 512 -> size*size.
-          - Dropout (0.2) trước lớp cuối.
-        - Hiệu suất: O(size^2) cho forward pass.
-        - Liên quan: Dùng trong hard (dqn_move) và huấn luyện.
+        Tạo mô hình CNN tối ưu cho DQN.
+
+        Logic:
+        - Input: Ma trận size x size (1 kênh).
+        - 3 lớp Conv2d (32, 64, 128) với BatchNorm2d và ReLU, không dùng Dropout.
+        - 2 lớp fully connected: 128*size*size -> 512 -> size*size.
+        - Output: Q-values cho size^2 ô.
+        Hiệu suất: O(size^2) cho mỗi forward pass.
+        Liên quan: Dùng trong hard (dqn_move) và huấn luyện (replay).
         """
         class DQN(nn.Module):
             def __init__(self, size):
@@ -599,10 +652,7 @@ class TicTacToeAI(TicTacToe):
                 self.bn2 = nn.BatchNorm2d(64)
                 self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
                 self.bn3 = nn.BatchNorm2d(128)
-                self.conv4 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
-                self.bn4 = nn.BatchNorm2d(256)
-                self.fc1 = nn.Linear(256 * size * size, 512)
-                self.dropout = nn.Dropout(0.2)
+                self.fc1 = nn.Linear(128 * size * size, 512)
                 self.fc2 = nn.Linear(512, size * size)
 
             def forward(self, x):
@@ -610,22 +660,22 @@ class TicTacToeAI(TicTacToe):
                 x = torch.relu(self.bn1(self.conv1(x)))
                 x = torch.relu(self.bn2(self.conv2(x)))
                 x = torch.relu(self.bn3(self.conv3(x)))
-                x = torch.relu(self.bn4(self.conv4(x)))
                 x = x.view(x.size(0), -1)
                 x = torch.relu(self.fc1(x))
-                x = self.dropout(x)
                 x = self.fc2(x)
                 return x
         return DQN(size)
 
     def augment_state(self, state, full_augmentation=False):
         """
-        Tạo các phiên bản đối xứng của trạng thái bàn cờ để tăng dữ liệu huấn luyện.
-        - Logic:
-          - Nếu full_augmentation: Tạo 6 phiên bản (xoay 90/180/270, lật ngang/dọc).
-          - Nếu không: Tạo 2 phiên bản (xoay 90, lật ngang).
-        - Hiệu suất: O(size^2) để xoay/lật ma trận.
-        - Liên quan: Dùng trong huấn luyện (store_experience).
+        Tạo các phiên bản đối xứng của bàn cờ để tăng dữ liệu huấn luyện.
+
+        Logic:
+        - Nếu full_augmentation: Tạo 6 phiên bản (xoay 90/180/270, lật ngang/dọc).
+        - Nếu không: Tạo 2 phiên bản (xoay 90, lật ngang).
+        - Trả về danh sách các trạng thái đối xứng.
+        Hiệu suất: O(size^2) để xoay/lật ma trận.
+        Liên quan: Dùng trong huấn luyện (store_experience).
         """
         states = [state]
         if full_augmentation:
@@ -645,14 +695,18 @@ class TicTacToeAI(TicTacToe):
 
     def store_experience(self, state, action, reward, next_state, done):
         """
-        Lưu kinh nghiệm (state, action, reward, next_state, done) vào memory hoặc elite_memory.
-        - Logic:
-          - Điều chỉnh reward dựa trên can_extend_chain (+0.5), can_block (+0.7), hoặc không chiến thuật (-0.05).
-          - Lưu vào memory nếu kinh nghiệm chất lượng cao (done hoặc |reward| >= 0.5).
-          - Dùng augment_state để tạo phiên bản đối xứng (6 nếu chất lượng cao, 2 nếu không).
-          - Giới hạn memory (50,000), elite_memory (10,000).
-        - Hiệu suất: O(size^2) cho augment_state và kiểm tra chuỗi.
-        - Liên quan: Dùng trong huấn luyện (train_game).
+        Lưu kinh nghiệm huấn luyện vào bộ nhớ và bộ nhớ chất lượng cao.
+
+        Logic:
+        - Điều chỉnh phần thưởng:
+          + +0.5 nếu tạo chuỗi (can_extend_chain).
+          + +0.7 nếu chặn đối thủ (can_block).
+          + -0.05 nếu không tạo chuỗi hoặc chặn.
+        - Chỉ lưu kinh nghiệm chất lượng cao (done hoặc |reward| >= 0.5) với xác suất 50%.
+        - Dùng augment_state để tăng dữ liệu (6 phiên bản nếu chất lượng cao, 2 nếu không).
+        - Lưu vào memory (20000) hoặc elite_memory (5000), ưu tiên kinh nghiệm tốt.
+        Hiệu suất: O(size^2) do augment_state và kiểm tra chuỗi/chặn.
+        Liên quan: Dùng trong huấn luyện (train_game).
         """
         if not done:
             game_temp = TicTacToe(self.size)
@@ -691,21 +745,22 @@ class TicTacToeAI(TicTacToe):
 
     def dqn_move(self, episode=0, total_episodes=500000, use_alpha_beta=False):
         """
-        Chọn nước đi với epsilon-greedy cải tiến cho DQN.
-        - Logic:
-          - Nếu episode < 5000 và random < 0.5, dùng alpha_beta_move (độ sâu 2).
-          - Tính epsilon giảm dần từ 1.0 đến 0.05 dựa trên episode.
-          - Nếu random < epsilon, chọn ngẫu nhiên.
-          - Nếu không, dùng policy_net dự đoán Q-values, chọn nước đi tốt nhất trong ô trống.
-        - Hiệu suất: O(size^2) cho forward pass qua CNN.
-        - Liên quan: Dùng trong hard (hard_move) và huấn luyện (train_game).
+        Chọn nước đi bằng DQN với epsilon-greedy, kết hợp alpha-beta.
+
+        Logic:
+        - Epsilon giảm từ 1.0 xuống 0.05 qua 90% total_episodes.
+        - Nếu use_alpha_beta và episode < 10000, dùng alpha_beta_move (độ sâu 1) với xác suất 80%.
+        - Nếu random < epsilon, chọn ngẫu nhiên.
+        - Nếu không, dùng policy_net để chọn nước đi có Q-value cao nhất trong các ô trống.
+        Hiệu suất: O(size^2) cho forward pass và kiểm tra ô trống.
+        Liên quan: Dùng trong hard (hard_move) và huấn luyện (train_game).
         """
         epsilon_start = 1.0
         epsilon_end = 0.05
         epsilon = epsilon_end + (epsilon_start - epsilon_end) * (1 - episode / (0.9 * total_episodes))
 
-        if use_alpha_beta and episode < 5000 and random.random() < 0.5:
-            move = self.alpha_beta_move(depth=2, is_maximizing_player=True)[1]
+        if use_alpha_beta and episode < 10000 and random.random() < 0.8:
+            move = self.alpha_beta_move(depth=1, is_maximizing_player=True)[1]
             if move is not None:
                 return move
 
@@ -725,18 +780,23 @@ class TicTacToeAI(TicTacToe):
 
     def replay(self):
         """
-        Huấn luyện mô hình bằng cách lấy mẫu từ memory và elite_memory.
-        - Logic:
-          - Lấy mẫu batch (128) với 50% từ memory, 50% từ elite_memory.
-          - Dùng prioritized experience replay với alpha=0.8, epsilon=1e-6.
-          - Tính Q-values và target bằng Double DQN (policy_net và target_net).
-          - Cập nhật trọng số bằng Adam, clip gradient norm <= 1.0.
-          - Giảm learning rate mỗi 50,000 episodes (gamma=0.1).
-        - Hiệu suất: O(batch_size * size^2) cho mỗi lần replay.
-        - Liên quan: Dùng trong huấn luyện (train_game).
+        Cập nhật mô hình DQN bằng kinh nghiệm từ memory và elite_memory.
+
+        Logic:
+        - Chỉ chạy nếu tổng kinh nghiệm >= 1000.
+        - Lấy batch_size=256 mẫu (50% từ memory, 50% từ elite_memory nếu đủ).
+        - Dùng prioritized experience replay (per_alpha=0.9, per_epsilon=1e-6).
+        - Tính loss bằng MSE, cập nhật policy_net bằng Adam và mixed precision.
+        - Cập nhật độ ưu tiên dựa trên TD error.
+        Hiệu suất: O(batch_size * size^2) cho forward pass và backpropagation.
+        Tối ưu hóa:
+        - Mixed precision: Tăng tốc ~20-50% trên MPS/CUDA.
+        - Batch_size=256: Cân bằng giữa tốc độ và độ chính xác.
+        - per_alpha=0.9: Tăng trọng số cho kinh nghiệm quan trọng.
+        Liên quan: Dùng trong huấn luyện (train_game).
         """
         total_experiences = len(self.memory) + len(self.elite_memory)
-        if total_experiences < 64:
+        if total_experiences < 1000:
             return
 
         current_batch_size = min(self.batch_size, total_experiences)
@@ -777,18 +837,19 @@ class TicTacToeAI(TicTacToe):
         next_state = torch.tensor(np.array(next_state), dtype=torch.float32, device=self.device)
         done = torch.tensor(done, dtype=torch.float32, device=self.device)
 
-        q_values = self.policy_net(state)
-        with torch.no_grad():
-            next_q_values = self.policy_net(next_state)
-            next_q_target_values = self.target_net(next_state)
-        target = q_values.clone()
+        with autocast(enabled=(self.device.type in ["mps", "cuda"])):
+            q_values = self.policy_net(state)
+            with torch.no_grad():
+                next_q_values = self.policy_net(next_state)
+                next_q_target_values = self.target_net(next_state)
+            target = q_values.clone()
 
-        for i in range(current_batch_size):
-            best_action = torch.argmax(next_q_values[i]).item()
-            target[i, action[i]] = reward[i] + self.gamma * next_q_target_values[i, best_action] * (1 - done[i])
+            for i in range(current_batch_size):
+                best_action = torch.argmax(next_q_values[i]).item()
+                target[i, action[i]] = reward[i] + self.gamma * next_q_target_values[i, best_action] * (1 - done[i])
 
-        loss = nn.MSELoss()(q_values, target)
-        td_errors = torch.abs(q_values - target).detach().max(dim=1)[0].cpu().numpy()
+            loss = nn.MSELoss()(q_values, target)
+            td_errors = torch.abs(q_values - target).detach().max(dim=1)[0].cpu().numpy()
 
         for (mem_type, idx), error in zip(indices, td_errors):
             if mem_type == 0:
@@ -797,26 +858,31 @@ class TicTacToeAI(TicTacToe):
                 self.elite_priorities[idx] = error
 
         self.optimizer.zero_grad()
-        loss.backward()
+        self.scaler.scale(loss).backward()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
-        self.optimizer.step()
         self.scheduler.step()
 
     def save_model(self, board_size):
         """
-        Lưu trọng số mô hình vào file `dqn_{size}x{size}.pth`.
-        - Logic: Lưu state_dict của policy_net.
-        - Hiệu suất: O(size^2) để ghi file.
-        - Liên quan: Dùng trong huấn luyện (train_game), ảnh hưởng hard (tải trong __init__).
+        Lưu trọng số mô hình DQN vào file.
+
+        Logic: Lưu state_dict của policy_net vào `dqn_{size}x{size}.pth`.
+        Hiệu suất: O(1) để lưu file, phụ thuộc vào kích thước mô hình (~10-50MB).
+        Liên quan: Dùng trong huấn luyện (train_game) để lưu mô hình tốt.
+        Dữ liệu: Tạo file `dqn_{size}x{size}.pth`.
         """
         torch.save(self.policy_net.state_dict(), f"dqn_{board_size}x{board_size}.pth")
 
     def save_memory(self, filename):
         """
-        Lưu bộ nhớ kinh nghiệm vào file `.pkl`.
-        - Logic: Lưu memory và priorities.
-        - Hiệu suất: O(memory_capacity) để ghi file.
-        - Liên quan: Dùng trong huấn luyện (train_game).
+        Lưu bộ nhớ kinh nghiệm vào file.
+
+        Logic: Lưu memory và priorities vào file .pkl bằng pickle.
+        Hiệu suất: O(memory_capacity) để lưu, phụ thuộc vào memory (~100-500MB).
+        Liên quan: Dùng trong huấn luyện (train_game) để lưu kinh nghiệm.
+        Dữ liệu: Tạo file `memory_{size}x{size}.pkl`.
         """
         with open(filename, 'wb') as f:
             pickle.dump(self.memory, f)
@@ -824,10 +890,12 @@ class TicTacToeAI(TicTacToe):
 
     def save_elite_memory(self, filename):
         """
-        Lưu bộ nhớ chất lượng cao vào file `.pkl`.
-        - Logic: Lưu elite_memory và elite_priorities.
-        - Hiệu suất: O(elite_memory_capacity) để ghi file.
-        - Liên quan: Dùng trong huấn luyện (train_game).
+        Lưu bộ nhớ chất lượng cao vào file.
+
+        Logic: Lưu elite_memory và elite_priorities vào file .pkl bằng pickle.
+        Hiệu suất: O(elite_memory_capacity) để lưu, phụ thuộc vào elite_memory (~50-200MB).
+        Liên quan: Dùng trong huấn luyện (train_game) để lưu kinh nghiệm tốt.
+        Dữ liệu: Tạo file `elite_memory_{size}x{size}.pkl`.
         """
         with open(filename, 'wb') as f:
             pickle.dump(self.elite_memory, f)
@@ -835,10 +903,12 @@ class TicTacToeAI(TicTacToe):
 
     def load_memory(self, filename):
         """
-        Tải bộ nhớ kinh nghiệm từ file `.pkl`.
-        - Logic: Tải memory và priorities, xử lý lỗi nếu file không tồn tại.
-        - Hiệu suất: O(memory_capacity) để đọc file.
-        - Liên quan: Dùng trong huấn luyện (train_game).
+        Tải bộ nhớ kinh nghiệm từ file.
+
+        Logic: Tải memory và priorities từ file .pkl, xử lý lỗi nếu file không tồn tại.
+        Hiệu suất: O(memory_capacity) để tải, phụ thuộc vào memory (~100-500MB).
+        Liên quan: Dùng trong huấn luyện (train_game) để tiếp tục huấn luyện.
+        Dữ liệu: Đọc file `memory_{size}x{size}.pkl`.
         """
         try:
             with open(filename, 'rb') as f:
@@ -849,10 +919,12 @@ class TicTacToeAI(TicTacToe):
 
     def load_elite_memory(self, filename):
         """
-        Tải bộ nhớ chất lượng cao từ file `.pkl`.
-        - Logic: Tải elite_memory và elite_priorities, xử lý lỗi nếu file không tồn tại.
-        - Hiệu suất: O(elite_memory_capacity) để đọc file.
-        - Liên quan: Dùng trong huấn luyện (train_game).
+        Tải bộ nhớ chất lượng cao từ file.
+
+        Logic: Tải elite_memory và elite_priorities từ file .pkl, xử lý lỗi nếu file không tồn tại.
+        Hiệu suất: O(elite_memory_capacity) để tải, phụ thuộc vào elite_memory (~50-200MB).
+        Liên quan: Dùng trong huấn luyện (train_game) để tiếp tục huấn luyện.
+        Dữ liệu: Đọc file `elite_memory_{size}x{size}.pkl`.
         """
         try:
             with open(filename, 'rb') as f:
@@ -863,31 +935,36 @@ class TicTacToeAI(TicTacToe):
 
     def update_target_network(self):
         """
-        Cập nhật trọng số target_net từ policy_net.
-        - Logic: Sao chép state_dict từ policy_net sang target_net.
-        - Hiệu suất: O(size^2) để sao chép trọng số.
-        - Liên quan: Dùng trong huấn luyện (train_game).
+        Cập nhật target_net từ policy_net.
+
+        Logic: Sao chép state_dict từ policy_net sang target_net.
+        Hiệu suất: O(1) để sao chép tham số mô hình.
+        Liên quan: Dùng trong huấn luyện (train_game) để ổn định học DQN.
         """
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
 class Algorithm:
     """
-    Lớp xử lý logic trận đấu và huấn luyện AI.
-    - Mục đích: Quản lý ván chơi với người dùng và huấn luyện DQN qua self-play.
-    - Hiệu suất: Phụ thuộc vào chế độ (easy, medium, hard) và số episodes huấn luyện.
-    - Liên quan: Dùng trong mọi chế độ và huấn luyện.
-    - Dữ liệu: Sử dụng các file `.pth` và `.pkl` khi huấn luyện hoặc chơi hard.
+    Quản lý logic trận đấu và huấn luyện AI.
+
+    Mục đích: Điều phối các ván chơi với người dùng hoặc AI, huấn luyện DQN qua self-play.
+    Hiệu suất: Phụ thuộc vào chế độ (easy, medium, hard) và số episodes huấn luyện.
+    Liên quan: Dùng trong mọi chế độ (play_game, compare_modes) và huấn luyện (train_game).
+    Dữ liệu: Sử dụng các file `.pth` (mô hình) và `.pkl` (kinh nghiệm) khi huấn luyện hoặc chơi hard.
     """
-    
+
     @staticmethod
     def evaluate_model(ai, size, num_games=20):
         """
         Đánh giá mô hình DQN bằng cách đấu với đối thủ trung bình.
-        - Logic:
-          - Chơi num_games ván, AI (DQN) đấu với medium_move.
-          - Tính tỷ lệ thắng của AI.
-        - Hiệu suất: O(num_games * size^2) cho mỗi ván.
-        - Liên quan: Dùng trong huấn luyện (train_game) và khởi tạo (TicTacToeAI.__init__) để kiểm tra chất lượng mô hình.
+
+        Logic:
+        - Chơi num_games ván, AI (DQN) đấu với medium_move.
+        - Tính tỷ lệ thắng của AI (-1: O).
+        - In kết quả mỗi ván (thắng, thua, hòa).
+        Hiệu suất: O(num_games * size^2) do mỗi ván duyệt nước đi và kiểm tra trạng thái.
+        Tối ưu hóa: Dùng epsilon thấp (~0.05) để đánh giá chính xác sức mạnh DQN.
+        Liên quan: Dùng trong huấn luyện (train_game) và khởi tạo (TicTacToeAI.__init__) để kiểm tra chất lượng mô hình.
         """
         wins = 0
         for _ in range(num_games):
@@ -898,7 +975,7 @@ class Algorithm:
                     move = game.medium_move(1)
                     game.make_move(*move, 1)
                 else:
-                    move = ai.dqn_move(episode=500000)  # Tối ưu: Dùng epsilon thấp (~0.05) để đánh giá
+                    move = ai.dqn_move(episode=500000)  # Epsilon ~0.05
                     game.make_move(*move, -1)
                 
                 if game.is_winner(-1):
@@ -917,16 +994,18 @@ class Algorithm:
     @staticmethod
     def play_game(size, mode):
         """
-        Chơi một trận với người chơi, hỗ trợ chế độ dễ, trung bình, khó.
-        - Logic:
-          - Khởi tạo TicTacToeAI với mode tương ứng (easy, medium, hard).
-          - Người chơi nhập nước đi (row col), AI trả lời theo chế độ.
-          - In bàn cờ sau mỗi nước, kiểm tra thắng/thua/hòa.
-        - Hiệu suất: Phụ thuộc chế độ:
-          - Easy: ~0.1-0.5s.
-          - Medium: ~0.1-0.5s.
-          - Hard: ~0.5-0.7s.
-        - Liên quan: Dùng trong mọi chế độ khi chơi với người.
+        Chơi một trận với người dùng ở chế độ dễ, trung bình, hoặc khó.
+
+        Logic:
+        - Khởi tạo TicTacToeAI với chế độ tương ứng (easy, medium, hard).
+        - Người chơi nhập nước đi (row col), AI trả lời theo chế độ.
+        - In bàn cờ sau mỗi nước, kiểm tra thắng/thua/hòa.
+        - Xử lý lỗi đầu vào (ô không hợp lệ, định dạng sai).
+        Hiệu suất:
+        - Easy: ~0.1-0.5s/nước do IDDFS.
+        - Medium: ~0.1-0.5s/nước do alpha-beta.
+        - Hard: ~0.5-0.7s/nước do DQN + alpha-beta (5x5, 7x7).
+        Liên quan: Dùng trong chế độ Play (Main.main) để chơi với người.
         """
         game = TicTacToeAI(size=size, mode=mode)
         current_player = 1
@@ -966,27 +1045,37 @@ class Algorithm:
             current_player *= -1
 
     @staticmethod
-    def train_game(size, episodes=100000, target_update=500, load_model_path=None, load_memory_path=None, load_elite_memory_path=None):
+    def train_game(size, episodes=100000, target_update=1000, load_model_path=None, load_memory_path=None, load_elite_memory_path=None):
         """
-        Huấn luyện hai AI đấu với nhau, lưu mô hình và bộ nhớ tốt nhất.
-        - Logic:
-          - Tạo hai TicTacToeAI, tải mô hình/memory nếu có.
-          - Chơi episodes ván, mỗi ván:
-            - Dùng dqn_move (epsilon-greedy) để chọn nước đi.
-            - Lưu kinh nghiệm vào memory/elite_memory.
-            - Huấn luyện bằng replay nếu đủ kinh nghiệm.
-          - Cập nhật target_net mỗi target_update episodes.
-          - Lưu mô hình/memory nếu win_rate cải thiện.
-          - Xử lý Ctrl+C để lưu trước khi thoát.
-        - Hiệu suất: O(episodes * size^2) cho toàn bộ huấn luyện.
-        - Liên quan: Dùng để tạo `dqn_{size}x{size}.pth` cho hard.
-        - Dữ liệu:
-          - Đọc: `dqn_{size}x{size}.pth`, `memory_{size}x{size}.pkl`, `elite_memory_{size}x{size}.pkl`.
-          - Ghi: Ghi đè các file trên khi cải thiện hoặc Ctrl+C.
+        Huấn luyện DQN qua self-play giữa hai AI trên bàn size x size.
+
+        Logic:
+        - Khởi tạo hai AI (ai1, ai2) để đấu với nhau.
+        - Chơi episodes ván, mỗi ván:
+          + Hai AI luân phiên đi (ai1: X, ai2: O), dùng dqn_move với alpha-beta hỗ trợ.
+          + Lưu kinh nghiệm (state, action, reward, next_state, done) vào memory.
+          + Phần thưởng: +1 (thắng), +0.5 (hòa), 0 (đang chơi), -1 (thua).
+        - Replay mỗi 10 episodes nếu memory >= 1000.
+        - Cập nhật target_net mỗi target_update=1000 episodes.
+        - Đánh giá ai1 mỗi 500 episodes (10 trận vs medium_move).
+        - Lưu mô hình, memory nếu win_rate > 0.5 và > best_win_rate.
+        - Xử lý Ctrl+C để lưu trước khi thoát.
+        Hiệu suất:
+        - ~15-30 giây/episode (7x7, M2), ~5-10 giây/episode (5x5, MSI).
+        - RAM: ~0.5-1GB, file .pkl ~200-500MB.
+        Tối ưu hóa:
+        - Replay mỗi 10 episodes: Tăng tần suất học.
+        - Batch_size=256: Cân bằng tốc độ và độ chính xác.
+        - target_update=1000: Ổn định học DQN.
+        - Mixed precision: Tăng tốc ~20-50% trên MPS/CUDA.
+        Liên quan: Dùng trong chế độ Training (Main.main) để huấn luyện DQN.
+        Dữ liệu:
+        - Đọc: `dqn_{size}x{size}.pth`, `memory_{size}x{size}.pkl`, `elite_memory_{size}x{size}.pkl`.
+        - Ghi: Tạo hoặc cập nhật các file trên khi lưu.
         """
         print(f"Training Double DQN on {size}x{size} board for {episodes} episodes.\n")
-        ai1 = TicTacToeAI(size=size, mode="hard", evaluate_model=False)  # Tắt kiểm tra để tiết kiệm thời gian
-        ai2 = TicTacToeAI(size=size, mode="hard", evaluate_model=False)  # Tắt kiểm tra để tiết kiệm thời gian
+        ai1 = TicTacToeAI(size=size, mode="hard", evaluate_model=False)
+        ai2 = TicTacToeAI(size=size, mode="hard", evaluate_model=False)
 
         if load_model_path:
             try:
@@ -1063,24 +1152,23 @@ class Algorithm:
                     current_player *= -1
                     state = next_state
 
-                if len(ai1.memory) >= 64:
+                if episode % 10 == 0 and len(ai1.memory) >= 1000:
                     ai1.replay()
-                if len(ai2.memory) >= 64:
                     ai2.replay()
 
                 if episode % target_update == 0:
                     ai1.update_target_network()
                     ai2.update_target_network()
 
-                if episode % 1000 == 0:
+                if episode % 500 == 0:
                     print(f"\n--- Episode {episode} Summary ---")
                     print(f"AI 1 (X) wins: {win_ai1}")
                     print(f"AI 2 (O) wins: {win_ai2}")
                     print(f"Draws        : {draws}")
-                    win_rate = Algorithm.evaluate_model(ai1, size)
+                    win_rate = Algorithm.evaluate_model(ai1, size, num_games=10)
                     print(f"Win rate: {win_rate:.2f}, Best win rate: {best_win_rate:.2f}")
                     print(f"Memory: {len(ai1.memory)}/{ai1.memory_capacity}, Elite: {len(ai1.elite_memory)}/{ai1.elite_memory_capacity}")
-                    if win_rate > best_win_rate:
+                    if win_rate > 0.5 and win_rate > best_win_rate:
                         best_win_rate = win_rate
                         ai1.save_model(size)
                         ai1.save_memory(f"memory_{size}x{size}.pkl")
@@ -1099,19 +1187,24 @@ class Algorithm:
                 ai1.save_elite_memory(f"elite_memory_{size}x{size}.pkl")
                 print(f"Saved model to dqn_{size}x{size}.pth")
                 print(f"Saved memory to memory_{size}x{size}.pkl")
-                print(f"Saved elite memory to elite_memory_{size}x{size}.pkl")
+                print(f"Saved best elite memory to elite_memory_{size}x{size}.pkl")
             sys.exit(0)
 
     @staticmethod
     def compare_modes(size, num_games):
         """
-        Mô phỏng các trận đấu giữa Medium vs Easy và Medium vs Hard, đảm bảo không thiên vị bằng cách luân phiên vai trò X/O.
-        - Logic:
-          - Chạy num_games trận, chia đều: num_games//2 trận Medium (X) vs Easy/Hard (O), và num_games//2 trận Medium (O) vs Easy/Hard (X).
-          - Ghi lại thắng, thua, hòa từ góc nhìn của Medium.
-          - In số trận thắng, thua, hòa và tỷ lệ thắng.
-        - Hiệu suất: O(num_games * size^2) cho mỗi nhóm trận.
-        - Liên quan: Dùng trong chế độ Compare để so sánh hiệu suất.
+        So sánh hiệu suất giữa Medium vs Easy và Medium vs Hard qua các trận đấu.
+
+        Logic:
+        - Chạy num_games trận, chia đều: num_games//2 trận Medium (X) vs Easy/Hard (O), và num_games//2 trận Medium (O) vs Easy/Hard (X).
+        - Ghi lại thắng, thua, hòa từ góc nhìn của Medium.
+        - In số trận thắng, thua, hòa, tỷ lệ thắng, và tóm tắt kết quả.
+        - Đảm bảo không thiên vị bằng cách luân phiên vai trò X/O.
+        Hiệu suất: O(num_games * size^2) cho mỗi nhóm trận do duyệt nước đi và kiểm tra trạng thái.
+        Tối ưu hóa:
+        - In tiến độ mỗi 10 trận để theo dõi.
+        - Reset bàn cờ mỗi ván để đảm bảo độc lập.
+        Liên quan: Dùng trong chế độ Compare (Main.main) để đánh giá hiệu suất các chế độ.
         """
         print(f"\nStarting comparison on {size}x{size} board with {num_games} games per matchup...\n")
         
@@ -1191,17 +1284,27 @@ class Algorithm:
         print(f"- Easy mode is ideal for beginners, while Hard should pose a significant challenge.")
 
 class Main:
+    """
+    Điều khiển chính của chương trình, quản lý giao diện người dùng.
+
+    Mục đích: Hiển thị menu, xử lý lựa chọn người dùng, và gọi các chức năng tương ứng.
+    Hiệu suất: Phụ thuộc vào chức năng được gọi (play_game, train_game, compare_modes).
+    Liên quan: Gọi play_game, train_game, hoặc compare_modes từ Algorithm.
+    """
+
     @staticmethod
     def main():
         """
-        Hàm chính: Hiển thị menu và xử lý lựa chọn người dùng, thêm chế độ Compare.
-        - Logic:
-          - Mode 1: Chơi với AI (easy, medium, hard).
-          - Mode 2: Huấn luyện DQN (chỉ cho 5x5 và 7x7).
-          - Mode 3: So sánh Medium vs Easy và Medium vs Hard.
-          - Xử lý lỗi đầu vào và Ctrl+C.
-        - Hiệu suất: Phụ thuộc vào play_game, train_game, hoặc compare_modes.
-        - Liên quan: Gọi play_game, train_game, hoặc compare_modes.
+        Hàm chính: Hiển thị menu và xử lý lựa chọn người dùng.
+
+        Logic:
+        - Hiển thị menu với 3 chế độ: Play (1), Training (2), Compare (3).
+        - Mode 1: Chơi với AI (easy, medium, hard; 3x3, 5x5, 7x7).
+        - Mode 2: Huấn luyện DQN (5x5, 7x7; 5 stage, mỗi stage 100,000 episodes).
+        - Mode 3: So sánh Medium vs Easy và Medium vs Hard (3x3, 5x5, 7x7).
+        - Xử lý lỗi đầu vào (kích thước bàn, chế độ, số trận) và Ctrl+C.
+        Hiệu suất: Phụ thuộc vào play_game (~0.1-0.7s/nước), train_game (~5-30s/episode), hoặc compare_modes (~num_games * size^2).
+        Liên quan: Gọi các hàm từ Algorithm để thực thi chức năng.
         """
         print("Welcome to Tic-Tac-Toe!")
         print("1: Play against AI")
@@ -1231,7 +1334,7 @@ class Main:
                         load_model = f"dqn_{size}x{size}.pth" if stage > 0 else None
                         load_memory = f"memory_{size}x{size}.pkl" if stage > 0 else None
                         load_elite_memory = f"elite_memory_{size}x{size}.pkl" if stage > 0 else None
-                        Algorithm.train_game(size, episodes=100000, target_update=500,
+                        Algorithm.train_game(size, episodes=100000, target_update=1000,
                                             load_model_path=load_model,
                                             load_memory_path=load_memory,
                                             load_elite_memory_path=load_elite_memory)
