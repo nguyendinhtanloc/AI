@@ -715,7 +715,10 @@ class TicTacToeAI(TicTacToe):
             def new_transform(x, y, prev=last_transform):
                 if prev:
                     x, y = prev(x, y)
-                return rotate_90(x, y, size)
+                new_x, new_y = rotate_90(x, y, size)
+                if not (0 <= new_x < size and 0 <= new_y < size):
+                    raise ValueError(f"Invalid transformation: ({new_x}, {new_y})")
+                return new_x, new_y
 
             result.append((current_state.copy(), lambda x, y, t=new_transform: t(x, y)))
 
@@ -731,21 +734,37 @@ class TicTacToeAI(TicTacToe):
                 def new_transform(x, y, prev=last_transform):
                     if prev:
                         x, y = prev(x, y)
-                    return rotate_90(x, y, size)
+                    new_x, new_y = rotate_90(x, y, size)
+                    if not (0 <= new_x < size and 0 <= new_y < size):
+                        raise ValueError(f"Invalid transformation: ({new_x}, {new_y})")
+                    return new_x, new_y
 
                 result.append((current_state.copy(), lambda x, y, t=new_transform: t(x, y)))
 
-        # Debug: Kiểm tra action transform
-        for _, transform in result:
+        # Kiểm tra action transform
+        valid_result = []
+        for state, transform in result:
+            valid = True
             if transform:
                 for x in range(size):
                     for y in range(size):
-                        new_x, new_y = transform(x, y)
-                        new_action = new_x * size + new_y
-                        if new_x < 0 or new_x >= size or new_y < 0 or new_y >= size or new_action >= size * size:
-                            print(f"Warning: Invalid transform at ({x}, {y}) -> ({new_x}, {new_y}), action={new_action}")
+                        try:
+                            new_x, new_y = transform(x, y)
+                            new_action = new_x * size + new_y
+                            if not (0 <= new_x < size and 0 <= new_y < size and 0 <= new_action < size * size):
+                                valid = False
+                                print(f"Warning: Invalid transform at ({x}, {y}) -> ({new_x}, {new_y}), action={new_action}")
+                                break
+                        except ValueError as e:
+                            valid = False
+                            print(f"Warning: Transform error: {e}")
+                            break
+                    if not valid:
+                        break
+            if valid:
+                valid_result.append((state, transform))
 
-        return result
+        return valid_result
                     
     def store_experience(self, state, action, reward, next_state, done):
         """
@@ -760,6 +779,10 @@ class TicTacToeAI(TicTacToe):
         # Kiểm tra action ban đầu
         if action < 0 or action >= self.size * self.size:
             print(f"Warning: Invalid action {action}, skipping experience.")
+            return
+        # Kiểm tra giá trị hợp lệ trong state
+        if not (np.all(np.isin(state, [-1, 0, 1])) and np.all(np.isin(next_state, [-1, 0, 1]))):
+            print(f"Warning: Invalid state values, skipping experience.")
             return
 
         # Điều chỉnh reward dựa trên chiến thuật
@@ -780,16 +803,23 @@ class TicTacToeAI(TicTacToe):
 
         full_augmentation = is_high_quality
         x, y = divmod(action, self.size)
-        augmented = self.augment_state(state, full_augmentation)
-        next_augmented = self.augment_state(next_state, full_augmentation)
+        try:
+            augmented = self.augment_state(state, full_augmentation)
+            next_augmented = self.augment_state(next_state, full_augmentation)
+        except ValueError as e:
+            print(f"Warning: Augmentation error, skipping experience: {e}")
+            return
 
         for (sym_state, action_transform), (sym_next_state, _) in zip(augmented, next_augmented):
             if action_transform:
-                new_x, new_y = action_transform(x, y)
-                new_action = new_x * self.size + new_y
-                # Kiểm tra action sau transform
-                if new_action < 0 or new_action >= self.size * self.size:
-                    print(f"Warning: Invalid transformed action {new_action} for original action {action}, skipping.")
+                try:
+                    new_x, new_y = action_transform(x, y)
+                    new_action = new_x * self.size + new_y
+                    if new_action < 0 or new_action >= self.size * self.size:
+                        print(f"Warning: Invalid transformed action {new_action} for original action {action}, skipping.")
+                        continue
+                except ValueError as e:
+                    print(f"Warning: Transform error for action {action}, skipping: {e}")
                     continue
             else:
                 new_action = action
@@ -868,25 +898,36 @@ class TicTacToeAI(TicTacToe):
 
         batch = []
         indices = []
+        max_action = self.size * self.size
 
         if memory_samples > 0 and len(self.memory) > 0:
             priorities = np.array(self.priorities) + self.per_epsilon
             probabilities = priorities ** self.per_alpha
             probabilities /= probabilities.sum()
             mem_indices = np.random.choice(len(self.memory), min(memory_samples, len(self.memory)), p=probabilities)
-            batch.extend([self.memory[idx] for idx in mem_indices])
-            indices.extend([(0, idx) for idx in mem_indices])
+            for idx in mem_indices:
+                state, action, reward, next_state, done = self.memory[idx]
+                if not (0 <= action < max_action):
+                    print(f"Warning: Invalid action {action} in memory at index {idx}, skipping.")
+                    continue
+                batch.append(self.memory[idx])
+                indices.append((0, idx))
 
         if elite_samples > 0 and len(self.elite_memory) > 0:
             priorities = np.array(self.elite_priorities) + self.per_epsilon
             probabilities = priorities ** self.per_alpha
             probabilities /= probabilities.sum()
             elite_indices = np.random.choice(len(self.elite_memory), min(elite_samples, len(self.elite_memory)), p=probabilities)
-            batch.extend([self.elite_memory[idx] for idx in elite_indices])
-            indices.extend([(1, idx) for idx in elite_indices])
+            for idx in elite_indices:
+                state, action, reward, next_state, done = self.elite_memory[idx]
+                if not (0 <= action < max_action):
+                    print(f"Warning: Invalid action {action} in elite_memory at index {idx}, skipping.")
+                    continue
+                batch.append(self.elite_memory[idx])
+                indices.append((1, idx))
 
         if len(batch) == 0:
-            print("Warning: Empty batch in replay, skipping.")
+            print("Warning: Empty batch after filtering invalid actions, skipping.")
             return
 
         try:
@@ -896,12 +937,6 @@ class TicTacToeAI(TicTacToe):
             reward = torch.tensor(reward, dtype=torch.float32, device=self.device)
             next_state = torch.tensor(np.array(next_state), dtype=torch.float32, device=self.device)
             done = torch.tensor(done, dtype=torch.float32, device=self.device)
-
-            # Kiểm tra tính hợp lệ của action
-            max_action = self.size * self.size
-            if any(a >= max_action or a < 0 for a in action):
-                print(f"Warning: Invalid action indices detected: {action.tolist()}, skipping batch.")
-                return
 
             self.policy_net.eval()
             self.target_net.eval()
@@ -914,7 +949,7 @@ class TicTacToeAI(TicTacToe):
             q_values = self.policy_net(state)
             target = q_values.clone()
 
-            for i in range(current_batch_size):
+            for i in range(len(batch)):
                 best_action = torch.argmax(next_q_values[i]).item()
                 target[i, action[i]] = reward[i] + self.gamma * next_q_target_values[i, best_action] * (1 - done[i])
 
@@ -983,14 +1018,29 @@ class TicTacToeAI(TicTacToe):
     def load_memory(self, filename):
         """
         Tải bộ nhớ kinh nghiệm từ file `.pkl`.
-        - Logic: Tải memory và priorities, xử lý lỗi nếu file không tồn tại hoặc hỏng.
-        - Hiệu suất: O(memory_capacity) để đọc file.
-        - Liên quan: Dùng trong huấn luyện (train_game).
+        - Logic: Tải memory và priorities, lọc bỏ kinh nghiệm không hợp lệ.
+        - Hiệu suất: O(memory_capacity) để đọc và kiểm tra file.
         """
         try:
             with open(filename, 'rb') as f:
-                self.memory = pickle.load(f)
-                self.priorities = pickle.load(f)
+                loaded_memory = pickle.load(f)
+                loaded_priorities = pickle.load(f)
+            valid_memory = []
+            valid_priorities = []
+            max_action = self.size * self.size
+            for i, (state, action, reward, next_state, done) in enumerate(loaded_memory):
+                if (state.shape == (self.size, self.size) and
+                    next_state.shape == (self.size, self.size) and
+                    0 <= action < max_action and
+                    np.all(np.isin(state, [-1, 0, 1])) and
+                    np.all(np.isin(next_state, [-1, 0, 1]))):
+                    valid_memory.append((state, action, reward, next_state, done))
+                    valid_priorities.append(loaded_priorities[i])
+                else:
+                    print(f"Warning: Invalid experience at index {i} in {filename}, skipping.")
+            self.memory = valid_memory
+            self.priorities = valid_priorities
+            print(f"Loaded {len(self.memory)} valid experiences from {filename}")
         except (FileNotFoundError, pickle.UnpicklingError, EOFError) as e:
             print(f"Failed to load memory from {filename}: {e}. Starting with empty memory.")
             self.memory = []
@@ -999,14 +1049,29 @@ class TicTacToeAI(TicTacToe):
     def load_elite_memory(self, filename):
         """
         Tải bộ nhớ chất lượng cao từ file `.pkl`.
-        - Logic: Tải elite_memory và elite_priorities, xử lý lỗi nếu file không tồn tại hoặc hỏng.
-        - Hiệu suất: O(elite_memory_capacity) để đọc file.
-        - Liên quan: Dùng trong huấn luyện (train_game).
+        - Logic: Tải elite_memory và elite_priorities, lọc bỏ kinh nghiệm không hợp lệ.
+        - Hiệu suất: O(elite_memory_capacity) để đọc và kiểm tra file.
         """
         try:
             with open(filename, 'rb') as f:
-                self.elite_memory = pickle.load(f)
-                self.elite_priorities = pickle.load(f)
+                loaded_elite_memory = pickle.load(f)
+                loaded_elite_priorities = pickle.load(f)
+            valid_elite_memory = []
+            valid_elite_priorities = []
+            max_action = self.size * self.size
+            for i, (state, action, reward, next_state, done) in enumerate(loaded_elite_memory):
+                if (state.shape == (self.size, self.size) and
+                    next_state.shape == (self.size, self.size) and
+                    0 <= action < max_action and
+                    np.all(np.isin(state, [-1, 0, 1])) and
+                    np.all(np.isin(next_state, [-1, 0, 1]))):
+                    valid_elite_memory.append((state, action, reward, next_state, done))
+                    valid_elite_priorities.append(loaded_elite_priorities[i])
+                else:
+                    print(f"Warning: Invalid experience at index {i} in {filename}, skipping.")
+            self.elite_memory = valid_elite_memory
+            self.elite_priorities = valid_elite_priorities
+            print(f"Loaded {len(self.elite_memory)} valid experiences from {filename}")
         except (FileNotFoundError, pickle.UnpicklingError, EOFError) as e:
             print(f"Failed to load elite memory from {filename}: {e}. Starting with empty elite memory.")
             self.elite_memory = []
