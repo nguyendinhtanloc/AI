@@ -691,55 +691,78 @@ class TicTacToeAI(TicTacToe):
                 return x
         return DQN(size)
 
-    def augment_state(self, state, full_augmentation=False):
+    def augment_state(self, state, full=True):
         """
-        Tạo các phiên bản đối xứng của trạng thái bàn cờ để tăng dữ liệu huấn luyện.
-        - Logic:
-          - Nếu full_augmentation: Tạo 6 phiên bản (xoay 90/180/270, lật ngang/dọc) với action tương ứng.
-          - Nếu không: Tạo 2 phiên bản (xoay 90, lật ngang) với action tương ứng.
-        - Hiệu suất: O(size^2) để xoay/lật ma trận.
-        - Liên quan: Dùng trong huấn luyện (store_experience).
+        Augment dữ liệu bằng cách xoay và lật bàn cờ, trả về danh sách (state, action_transform).
+        - full=True: Áp dụng tất cả 8 phép biến đổi (4 xoay, 4 lật).
+        - full=False: Chỉ áp dụng 4 xoay.
+        - action_transform: Hàm ánh xạ (x, y) sang (new_x, new_y) tương ứng.
         """
-        states = [state]
-        actions = [None]
+        def rotate_90(x, y, size):
+            return y, size - 1 - x
+
+        def flip_horizontal(x, y, size):
+            return x, size - 1 - y
+
+        result = [(state.copy(), None)]
+        current_state = state.copy()
         size = self.size
-        if full_augmentation:
-            states.extend([
-                np.rot90(state, k=1),
-                np.rot90(state, k=2),
-                np.rot90(state, k=3),
-                np.fliplr(state),
-                np.flipud(state)
-            ])
-            actions.extend([
-                lambda x, y: (y, size - 1 - x),  # Xoay 90
-                lambda x, y: (size - 1 - x, size - 1 - y),  # Xoay 180
-                lambda x, y: (size - 1 - y, x),  # Xoay 270
-                lambda x, y: (x, size - 1 - y),  # Lật ngang
-                lambda x, y: (size - 1 - x, y)  # Lật dọc
-            ])
-        else:
-            states.extend([
-                np.rot90(state, k=1),
-                np.fliplr(state)
-            ])
-            actions.extend([
-                lambda x, y: (y, size - 1 - x),  # Xoay 90
-                lambda x, y: (x, size - 1 - y)  # Lật ngang
-            ])
-        return list(zip(states, actions))
+
+        for _ in range(3):
+            current_state = np.rot90(current_state)
+            last_transform = result[-1][1]
+
+            def new_transform(x, y, prev=last_transform):
+                if prev:
+                    x, y = prev(x, y)
+                return rotate_90(x, y, size)
+
+            result.append((current_state.copy(), lambda x, y, t=new_transform: t(x, y)))
+
+        if full:
+            current_state = state.copy()
+            current_state = current_state[:, ::-1]  # Lật ngang
+            result.append((current_state.copy(), lambda x, y: flip_horizontal(x, y, size)))
+
+            for _ in range(3):
+                current_state = np.rot90(current_state)
+                last_transform = result[-1][1]
+
+                def new_transform(x, y, prev=last_transform):
+                    if prev:
+                        x, y = prev(x, y)
+                    return rotate_90(x, y, size)
+
+                result.append((current_state.copy(), lambda x, y, t=new_transform: t(x, y)))
+
+        # Debug: Kiểm tra action transform
+        for _, transform in result:
+            if transform:
+                for x in range(size):
+                    for y in range(size):
+                        new_x, new_y = transform(x, y)
+                        new_action = new_x * size + new_y
+                        if new_x < 0 or new_x >= size or new_y < 0 or new_y >= size or new_action >= size * size:
+                            print(f"Warning: Invalid transform at ({x}, {y}) -> ({new_x}, {new_y}), action={new_action}")
+
+        return result
                     
     def store_experience(self, state, action, reward, next_state, done):
         """
         Lưu kinh nghiệm (state, action, reward, next_state, done) vào memory hoặc elite_memory.
+        - Kiểm tra tính hợp lệ của state và action để ngăn lỗi.
+        - Augment dữ liệu với action được transform đúng.
         """
+        # Kiểm tra state
         if not (state.shape == (self.size, self.size) and next_state.shape == (self.size, self.size)):
             print(f"Warning: Invalid state shape, skipping experience.")
             return
+        # Kiểm tra action ban đầu
         if action < 0 or action >= self.size * self.size:
             print(f"Warning: Invalid action {action}, skipping experience.")
             return
 
+        # Điều chỉnh reward dựa trên chiến thuật
         if not done:
             game_temp = TicTacToe(self.size)
             game_temp.board = next_state
@@ -764,8 +787,9 @@ class TicTacToeAI(TicTacToe):
             if action_transform:
                 new_x, new_y = action_transform(x, y)
                 new_action = new_x * self.size + new_y
+                # Kiểm tra action sau transform
                 if new_action < 0 or new_action >= self.size * self.size:
-                    print(f"Warning: Invalid transformed action {new_action}, skipping.")
+                    print(f"Warning: Invalid transformed action {new_action} for original action {action}, skipping.")
                     continue
             else:
                 new_action = action
@@ -826,11 +850,9 @@ class TicTacToeAI(TicTacToe):
     def replay(self):
         """
         Huấn luyện mô hình với batch từ memory và elite_memory, đảm bảo tính ổn định.
-        - Logic: Lấy mẫu ưu tiên từ memory và elite_memory, tính loss MSE, cập nhật policy_net.
-        - Sử dụng prioritized experience replay với per_epsilon (tránh ưu tiên 0) và per_alpha (điều chỉnh trọng số mẫu).
-        - Trường hợp đặc biệt: Bỏ qua nếu batch rỗng hoặc gặp lỗi tensor, in cảnh báo.
-        - Hiệu suất: O(batch_size * size^2) cho forward/backward pass.
-        - Liên quan: Dùng trong huấn luyện (train_game).
+        - Kiểm tra tính hợp lệ của action để ngăn lỗi index out of bounds.
+        - Sử dụng prioritized experience replay với per_epsilon và per_alpha.
+        - Bỏ qua batch lỗi và in cảnh báo.
         """
         total_experiences = len(self.memory) + len(self.elite_memory)
         if total_experiences < 64:
@@ -876,7 +898,8 @@ class TicTacToeAI(TicTacToe):
             done = torch.tensor(done, dtype=torch.float32, device=self.device)
 
             # Kiểm tra tính hợp lệ của action
-            if any(a >= self.size * self.size or a < 0 for a in action):
+            max_action = self.size * self.size
+            if any(a >= max_action or a < 0 for a in action):
                 print(f"Warning: Invalid action indices detected: {action.tolist()}, skipping batch.")
                 return
 
