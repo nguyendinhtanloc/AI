@@ -529,7 +529,7 @@ class TicTacToe:
                     break
             return min_eval, best_move
 
-    def hard_move(self, player):
+    def hard_move(self, player, is_training=False):
         """
         Chế độ khó: Dùng alpha-beta với độ sâu cao cho 3x3, DQN cho 5x5 và 7x7.
         - Mục đích: Tạo AI mạnh hơn medium và easy, phù hợp với kích thước bàn cờ.
@@ -574,13 +574,14 @@ class TicTacToe:
             _, move = self.alpha_beta_move(depth=8, is_maximizing_player=(player == -1))
             return move
         else:
-            dqn_move = self.dqn_move(episode=500000)  # Epsilon ~0.05
+            dqn_move = self.dqn_move(episode=500000)
             moves = self.get_available_moves()
             best_score = -np.inf
             best_move = dqn_move
+            depth = 3 if is_training else (2 if self.size == 5 else 1)
             for i, j in moves:
                 self.board[i, j] = player
-                score, _ = self.alpha_beta_move(depth=3, is_maximizing_player=False)
+                score, _ = self.alpha_beta_move(depth=depth, is_maximizing_player=False)
                 self.board[i, j] = 0
                 if score > best_score:
                     best_score = score
@@ -1170,7 +1171,7 @@ class Algorithm:
                 elif mode == "medium":
                     move = game.medium_move(-1)
                 elif mode == "hard":
-                    move = game.hard_move(-1)
+                    move = game.hard_move(-1, is_training=False)
                 game.make_move(move[0], move[1], -1)
                 print(f"AI moves at: {move[0]} {move[1]}")
 
